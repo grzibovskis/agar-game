@@ -70,6 +70,7 @@ export default function AgarGame() {
   const scoreRef = useRef(0);
   const isAliveRef = useRef(false);
   const gameStartedRef = useRef(false);
+  const spikeLogicStartedLoggedRef = useRef(false);
   const playerNameRef = useRef("");
   const playerColorRef = useRef("#22c55e");
   const lastBroadcastRef = useRef(0);
@@ -100,6 +101,10 @@ export default function AgarGame() {
     gameStartedRef.current = next;
     setGameStarted(next);
   }
+
+  useEffect(() => {
+    console.info("[AgarGame] gameStarted state changed", { gameStarted });
+  }, [gameStarted]);
 
   function updateHudFromBlobs(blobs) {
     setParts(blobs.length);
@@ -283,6 +288,7 @@ export default function AgarGame() {
 
     isAliveRef.current = false;
     setGameStartedValue(false);
+    spikeLogicStartedLoggedRef.current = false;
     sendPlayerLeave("dead");
     setDeathReason(`You were eaten by ${killerName}.`);
     setShowGate(true);
@@ -305,22 +311,28 @@ export default function AgarGame() {
       playerNameRef.current = safeName;
       playerColorRef.current = colorFromId(`${sessionIdRef.current}-${safeName}`);
       isAliveRef.current = true;
+      spikeLogicStartedLoggedRef.current = false;
       setUsername(safeName);
       setDeathReason("");
       resetGame({ includeObstacles: true });
 
-      const channel = channelRef.current;
-      if (channel) {
-        channel.track({
-          sessionId: sessionIdRef.current,
-          username: safeName,
-        });
-      }
-
-      sendPlayerState(true);
       setGameStartedValue(true);
       setShowGate(false);
       console.info("[AgarGame] Game started", { safeName });
+
+      const channel = channelRef.current;
+      if (channel && typeof channel.track === "function") {
+        try {
+          channel.track({
+            sessionId: sessionIdRef.current,
+            username: safeName,
+          });
+        } catch (error) {
+          console.error("[AgarGame] failed to track presence", error);
+        }
+      }
+
+      sendPlayerState(true);
     } catch (error) {
       isAliveRef.current = false;
       setGameStartedValue(false);
@@ -462,6 +474,11 @@ export default function AgarGame() {
       const now = Date.now();
 
       if (gameStartedRef.current && isAliveRef.current) {
+        if (!spikeLogicStartedLoggedRef.current) {
+          spikeLogicStartedLoggedRef.current = true;
+          console.info("[AgarGame] Spike logic started");
+        }
+
         const spikeState = updateSpikesAndWarnings({
           spikes: spikesRef.current,
           warnings: warningZonesRef.current,
@@ -717,6 +734,7 @@ export default function AgarGame() {
     }
 
     resizeCanvas();
+    console.info("[AgarGame] App mounted");
     resetGame({ includeObstacles: false });
     setupRealtime();
 
