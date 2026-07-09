@@ -1,21 +1,59 @@
 import { FOOD_TARGET } from "./constants";
 
-export function createFood(count, worldWidth, worldHeight) {
-  const colors = ["#60a5fa", "#34d399", "#fbbf24", "#f472b6", "#a78bfa", "#fb7185"];
-
-  return Array.from({ length: count }, () => ({
-    x: Math.random() * worldWidth,
-    y: Math.random() * worldHeight,
-    radius: 5 + Math.random() * 5,
-    color: colors[Math.floor(Math.random() * colors.length)],
-  }));
+function isInsideRestrictedZone(x, y, radius, restrictedZones) {
+  return restrictedZones.some((zone) => {
+    const dx = x - zone.x;
+    const dy = y - zone.y;
+    return Math.hypot(dx, dy) < radius + zone.radius;
+  });
 }
 
-export function replenishFood(food, worldWidth, worldHeight) {
-  const nextFood = [...food];
+export function createFood(count, worldWidth, worldHeight, restrictedZones = []) {
+  const colors = ["#60a5fa", "#34d399", "#fbbf24", "#f472b6", "#a78bfa", "#fb7185"];
+  const nextFood = [];
+
+  for (let i = 0; i < count; i += 1) {
+    let created = null;
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const radius = 5 + Math.random() * 5;
+      const x = radius + Math.random() * (worldWidth - radius * 2);
+      const y = radius + Math.random() * (worldHeight - radius * 2);
+
+      if (isInsideRestrictedZone(x, y, radius, restrictedZones)) {
+        continue;
+      }
+
+      created = {
+        x,
+        y,
+        radius,
+        color: colors[Math.floor(Math.random() * colors.length)],
+      };
+      break;
+    }
+
+    if (created) {
+      nextFood.push(created);
+    }
+  }
+
+  return nextFood;
+}
+
+export function replenishFood(food, worldWidth, worldHeight, restrictedZones = []) {
+  const nextFood = food.filter(
+    (point) => !isInsideRestrictedZone(point.x, point.y, point.radius, restrictedZones)
+  );
 
   while (nextFood.length < FOOD_TARGET) {
-    nextFood.push(...createFood(1, worldWidth, worldHeight));
+    const created = createFood(1, worldWidth, worldHeight, restrictedZones);
+
+    if (!created.length) {
+      break;
+    }
+
+    nextFood.push(...created);
   }
 
   return nextFood;

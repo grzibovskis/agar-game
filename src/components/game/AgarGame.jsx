@@ -8,6 +8,7 @@ import {
   GRID_SIZE,
   MERGE_INTERVAL_MS,
   REMOTE_STALE_MS,
+  SPIKE_MAX_COUNT,
   STATE_BROADCAST_MS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
@@ -28,6 +29,16 @@ import {
   updateBlobMovement,
 } from "@/components/game/logic/movementAttackLogic";
 import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer } from "@/components/game/logic/playerAppearance";
+import {
+  createInitialSpikes,
+  drawSpikeBalls,
+  drawWarningZones,
+  findSpikeCollision,
+  getRestrictedZones,
+  keepBlobsOutsideWarnings,
+  splitToMaxCells,
+  updateSpikesAndWarnings,
+} from "@/components/game/logic/spikeLogic";
 import GameHeader from "@/components/layout/GameHeader";
 import GameFooter from "@/components/layout/GameFooter";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -38,6 +49,14 @@ function createSessionId() {
   }
 
   return `session-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function round1(value) {
+  return Math.round(value * 10) / 10;
+}
+
+function serializeBlobs(blobs) {
+  return blobs.map((blob) => [round1(blob.x), round1(blob.y), round1(blob.radius)]);
 }
 
 export default function AgarGame() {
@@ -60,6 +79,8 @@ export default function AgarGame() {
   const blobsRef = useRef([]);
   const mergeStateRef = useRef({ nextMergeAt: null });
   const foodRef = useRef([]);
+  const spikesRef = useRef([]);
+  const warningZonesRef = useRef([]);
 
   const [score, setScore] = useState(0);
   const [size, setSize] = useState(22);
@@ -128,6 +149,7 @@ export default function AgarGame() {
         y: local.y,
         radius: local.radius,
         parts: blobsRef.current.length,
+        blobs: serializeBlobs(blobsRef.current),
         alive: true,
         updatedAt: now,
       },
@@ -192,9 +214,18 @@ export default function AgarGame() {
 
     const centerX = WORLD_WIDTH / 2;
     const centerY = WORLD_HEIGHT / 2;
+    const now = Date.now();
+
+    spikesRef.current = createInitialSpikes(SPIKE_MAX_COUNT, now, WORLD_WIDTH, WORLD_HEIGHT);
+    warningZonesRef.current = [];
 
     blobsRef.current = [createBlob(centerX, centerY, 22)];
-    foodRef.current = createFood(FOOD_TARGET, WORLD_WIDTH, WORLD_HEIGHT);
+    foodRef.current = createFood(
+      FOOD_TARGET,
+      WORLD_WIDTH,
+      WORLD_HEIGHT,
+      getRestrictedZones(spikesRef.current, warningZonesRef.current)
+    );
 
     const viewWidth = canvas.clientWidth || 1280;
     const viewHeight = canvas.clientHeight || 720;
@@ -306,11 +337,17 @@ export default function AgarGame() {
 
       event.preventDefault();
 
+      const beforeCount = blobsRef.current.length;
       const splitBlobs = splitAndJump(blobsRef.current, mouseTargetRef.current, createBlob);
+      const didSplit = splitBlobs.length > beforeCount;
+
       blobsRef.current = splitBlobs;
-      mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
       updateHudFromBlobs(splitBlobs);
-      sendPlayerState(true);
+
+      if (didSplit) {
+        mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
+        sendPlayerState(true);
+      }
     }
 
     function pruneStaleRemotePlayers() {
@@ -329,6 +366,42 @@ export default function AgarGame() {
       }
     }
 
+    function smoothRemotePlayers() {
+      const lerp = 0.24;
+
+      for (const remote of remotePlayersRef.current.values()) {
+        if (typeof remote.renderX !== "number") {
+          remote.renderX = remote.x;
+          remote.renderY = remote.y;
+          remote.renderRadius = remote.radius;
+        }
+
+        remote.renderX += (remote.x - remote.renderX) * lerp;
+        remote.renderY += (remote.y - remote.renderY) * lerp;
+        remote.renderRadius += (remote.radius - remote.renderRadius) * lerp;
+
+        if (!remote.blobs?.length) {
+          continue;
+        }
+
+        remote.blobs = remote.blobs.map((blob) => {
+          const next = { ...blob };
+
+          if (typeof next.renderX !== "number") {
+            next.renderX = next.x;
+            next.renderY = next.y;
+            next.renderRadius = next.radius;
+          }
+
+          next.renderX += (next.x - next.renderX) * lerp;
+          next.renderY += (next.y - next.renderY) * lerp;
+          next.renderRadius += (next.radius - next.renderRadius) * lerp;
+
+          return next;
+        });
+      }
+    }
+
     function gameLoop() {
       if (!rafReadyRef.current) {
         animationRef.current = requestAnimationFrame(gameLoop);
@@ -342,14 +415,49 @@ export default function AgarGame() {
       ctx.fillStyle = "#0b1325";
       ctx.fillRect(0, 0, width, height);
 
-      const blobs = blobsRef.current;
+      let blobs = blobsRef.current;
+      const now = Date.now();
+
+      const spikeState = updateSpikesAndWarnings({
+        spikes: spikesRef.current,
+        warnings: warningZonesRef.current,
+        now,
+        worldWidth: WORLD_WIDTH,
+        worldHeight: WORLD_HEIGHT,
+      });
+
+      spikesRef.current = spikeState.spikes;
+      warningZonesRef.current = spikeState.warnings;
 
       if (isAliveRef.current) {
         updateBlobMovement(blobs, mouseTargetRef.current);
         separateOverlappingBlobs(blobs);
 
+        keepBlobsOutsideWarnings(blobs, warningZonesRef.current);
+
+        const hitSpike = findSpikeCollision(blobs, spikesRef.current);
+
+        if (hitSpike) {
+          const beforeCount = blobs.length;
+          const splitToMax = splitToMaxCells(blobs, createBlob, hitSpike);
+          const didSplit = splitToMax.length > beforeCount;
+          blobsRef.current = splitToMax;
+          blobs = splitToMax;
+
+          if (didSplit) {
+            mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
+            updateHudFromBlobs(splitToMax);
+            sendPlayerState(true);
+          }
+        }
+
         const { gainedScore, remainingFood } = consumeFood(blobs, foodRef.current);
-        foodRef.current = replenishFood(remainingFood, WORLD_WIDTH, WORLD_HEIGHT);
+        foodRef.current = replenishFood(
+          remainingFood,
+          WORLD_WIDTH,
+          WORLD_HEIGHT,
+          getRestrictedZones(spikesRef.current, warningZonesRef.current)
+        );
 
         if (gainedScore > 0) {
           setScoreValue(scoreRef.current + gainedScore);
@@ -376,6 +484,7 @@ export default function AgarGame() {
       }
 
       pruneStaleRemotePlayers();
+      smoothRemotePlayers();
 
       const centroid = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
 
@@ -400,6 +509,9 @@ export default function AgarGame() {
       ctx.strokeStyle = "rgba(148, 163, 184, 0.55)";
       ctx.lineWidth = 5;
       ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+      drawWarningZones(ctx, warningZonesRef.current, now);
+      drawSpikeBalls(ctx, spikesRef.current);
 
       for (const point of foodRef.current) {
         drawCircle(ctx, point.x, point.y, point.radius, point.color);
@@ -454,7 +566,25 @@ export default function AgarGame() {
               return;
             }
 
-            remotePlayersRef.current.set(payload.sessionId, {
+            const incomingBlobs = Array.isArray(payload.blobs)
+              ? payload.blobs
+                  .map((entry) => {
+                    if (!Array.isArray(entry) || entry.length < 3) {
+                      return null;
+                    }
+
+                    return {
+                      x: entry[0],
+                      y: entry[1],
+                      radius: entry[2],
+                    };
+                  })
+                  .filter(Boolean)
+              : [];
+
+            const previous = remotePlayersRef.current.get(payload.sessionId);
+
+            const next = {
               sessionId: payload.sessionId,
               username: payload.username || "Player",
               color: payload.color || colorFromId(payload.sessionId),
@@ -463,7 +593,23 @@ export default function AgarGame() {
               radius: payload.radius,
               parts: payload.parts || 1,
               updatedAt: payload.updatedAt || Date.now(),
-            });
+              renderX: previous?.renderX ?? payload.x,
+              renderY: previous?.renderY ?? payload.y,
+              renderRadius: previous?.renderRadius ?? payload.radius,
+              blobs: incomingBlobs.map((blob, index) => {
+                const prevBlob = previous?.blobs?.[index];
+                return {
+                  x: blob.x,
+                  y: blob.y,
+                  radius: blob.radius,
+                  renderX: prevBlob?.renderX ?? blob.x,
+                  renderY: prevBlob?.renderY ?? blob.y,
+                  renderRadius: prevBlob?.renderRadius ?? blob.radius,
+                };
+              }),
+            };
+
+            remotePlayersRef.current.set(payload.sessionId, next);
 
             setOnlinePlayers(remotePlayersRef.current.size + 1);
           })

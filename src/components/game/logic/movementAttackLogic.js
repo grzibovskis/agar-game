@@ -1,5 +1,6 @@
 import {
   MAX_BLOBS,
+  MIN_SPLIT_RADIUS,
   PVP_OVERLAP_RATIO,
   PVP_SIZE_ADVANTAGE,
   WORLD_HEIGHT,
@@ -29,7 +30,8 @@ export function splitAndJump(blobs, mouseTarget, createBlob) {
       continue;
     }
 
-    const canSplit = blob.radius > 10 && next.length + 2 <= MAX_BLOBS;
+    const canSplit =
+      blob.radius >= MIN_SPLIT_RADIUS * Math.sqrt(2) && next.length + 2 <= MAX_BLOBS;
 
     if (!canSplit) {
       next.push(blob);
