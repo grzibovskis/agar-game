@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-const RELOAD_KEY = "agargame_chunk_reload_once";
+const RELOAD_KEY = "agareducation_chunk_reload_once";
 
 function getErrorMessage(reason) {
   if (!reason) {

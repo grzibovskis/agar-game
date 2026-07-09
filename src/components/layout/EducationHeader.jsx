@@ -1,4 +1,4 @@
-export default function GameHeader({ score, size, parts, onlinePlayers }) {
+export default function EducationHeader({ score, size, parts, onlinePlayers }) {
   const cards = [
     { label: "Score", value: score },
     { label: "Size", value: size },
@@ -9,7 +9,7 @@ export default function GameHeader({ score, size, parts, onlinePlayers }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-900 p-4 shadow-xl">
       <div>
-        <h1 className="text-2xl font-bold md:text-3xl">Agar Game</h1>
+        <h1 className="text-2xl font-bold md:text-3xl">Agar Education</h1>
         <p className="text-slate-300">Move mouse to travel. Press Space to jump-split side-by-side.</p>
       </div>
 
