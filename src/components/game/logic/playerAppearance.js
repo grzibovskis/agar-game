@@ -29,11 +29,42 @@ export function drawCircle(ctx, x, y, radius, color, strokeColor) {
 }
 
 export function drawRemotePlayer(ctx, remote) {
-  drawCircle(ctx, remote.x, remote.y, remote.radius, remote.color || "#3b82f6", "#dbeafe");
+  if (remote.blobs?.length) {
+    let labelBlob = remote.blobs[0];
+
+    for (const blob of remote.blobs) {
+      const blobX = blob.renderX ?? blob.x;
+      const blobY = blob.renderY ?? blob.y;
+      const blobRadius = blob.renderRadius ?? blob.radius;
+
+      drawCircle(ctx, blobX, blobY, blobRadius, remote.color || "#3b82f6", "#dbeafe");
+
+      const labelRadius = labelBlob.renderRadius ?? labelBlob.radius;
+      if (blobRadius > labelRadius) {
+        labelBlob = blob;
+      }
+    }
+
+    ctx.fillStyle = "white";
+    ctx.font = "bold 13px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(
+      remote.username || "Player",
+      labelBlob.renderX ?? labelBlob.x,
+      (labelBlob.renderY ?? labelBlob.y) + 4
+    );
+    return;
+  }
+
+  const x = remote.renderX ?? remote.x;
+  const y = remote.renderY ?? remote.y;
+  const radius = remote.renderRadius ?? remote.radius;
+
+  drawCircle(ctx, x, y, radius, remote.color || "#3b82f6", "#dbeafe");
   ctx.fillStyle = "white";
   ctx.font = "bold 13px Arial";
   ctx.textAlign = "center";
-  ctx.fillText(remote.username || "Player", remote.x, remote.y + 4);
+  ctx.fillText(remote.username || "Player", x, y + 4);
 }
 
 export function drawLocalBlob(ctx, blob, username, color) {
