@@ -88,7 +88,6 @@ export default function AgarGame() {
   const [size, setSize] = useState(22);
   const [parts, setParts] = useState(1);
   const [showGate, setShowGate] = useState(true);
-  const [gateBusy, setGateBusy] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
   const [deathReason, setDeathReason] = useState("");
   const [username, setUsername] = useState("");
@@ -292,7 +291,6 @@ export default function AgarGame() {
     sendPlayerLeave("dead");
     setDeathReason(`You were eaten by ${killerName}.`);
     setShowGate(true);
-    setGateBusy(false);
     resetGame({ includeObstacles: false });
   }
 
@@ -304,7 +302,6 @@ export default function AgarGame() {
     }
 
     console.info("[AgarGame] Start button clicked", { safeName });
-    setGateBusy(true);
 
     try {
       leaveSentRef.current = false;
@@ -339,8 +336,6 @@ export default function AgarGame() {
       console.error("[AgarGame] failed to start game", error);
       setDeathReason("Failed to start game. Please try again.");
       setShowGate(true);
-    } finally {
-      setGateBusy(false);
     }
   }
 
@@ -779,7 +774,6 @@ export default function AgarGame() {
 
       <UsernameGate
         open={showGate}
-        busy={gateBusy}
         defaultName={username}
         title={deathReason ? "You Were Eaten" : "Join Multiplayer Arena"}
         message={
