@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import UsernameGate from "@/components/UsernameGate";
-import GameArena from "@/components/game/GameArena";
+import EducationArena from "@/components/education/EducationArena";
 import {
   FOOD_TARGET,
   GRID_SIZE,
@@ -12,23 +12,23 @@ import {
   STATE_BROADCAST_MS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
-} from "@/components/game/logic/constants";
-import { clamp } from "@/components/game/logic/math";
+} from "@/components/education/logic/constants";
+import { clamp } from "@/components/education/logic/math";
 import {
   createBlobFactory,
   getBlobCentroid,
   getCombinedRadius,
   mergeClosestPairsOnce,
-} from "@/components/game/logic/blobLogic";
-import { createFood, drawGrid, replenishFood } from "@/components/game/logic/arenaLogic";
+} from "@/components/education/logic/blobLogic";
+import { createFood, drawGrid, replenishFood } from "@/components/education/logic/arenaLogic";
 import {
   consumeFood,
   resolvePvpCombat,
   separateOverlappingBlobs,
   splitAndJump,
   updateBlobMovement,
-} from "@/components/game/logic/movementAttackLogic";
-import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer } from "@/components/game/logic/playerAppearance";
+} from "@/components/education/logic/movementAttackLogic";
+import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer } from "@/components/education/logic/playerAppearance";
 import {
   createInitialSpikes,
   drawSpikeBalls,
@@ -38,9 +38,9 @@ import {
   keepBlobsOutsideWarnings,
   splitToMaxCells,
   updateSpikesAndWarnings,
-} from "@/components/game/logic/spikeLogic";
-import GameHeader from "@/components/layout/GameHeader";
-import GameFooter from "@/components/layout/GameFooter";
+} from "@/components/education/logic/spikeLogic";
+import EducationHeader from "@/components/layout/EducationHeader";
+import EducationFooter from "@/components/layout/EducationFooter";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 function createSessionId() {
@@ -59,7 +59,7 @@ function serializeBlobs(blobs) {
   return blobs.map((blob) => [round1(blob.x), round1(blob.y), round1(blob.radius)]);
 }
 
-export default function AgarGame() {
+export default function AgarEducation() {
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
   const rafReadyRef = useRef(false);
@@ -69,7 +69,7 @@ export default function AgarGame() {
   const remotePlayersRef = useRef(new Map());
   const scoreRef = useRef(0);
   const isAliveRef = useRef(false);
-  const gameStartedRef = useRef(false);
+  const educationStartedRef = useRef(false);
   const spikeLogicStartedLoggedRef = useRef(false);
   const playerNameRef = useRef("");
   const playerColorRef = useRef("#22c55e");
@@ -88,7 +88,7 @@ export default function AgarGame() {
   const [size, setSize] = useState(22);
   const [parts, setParts] = useState(1);
   const [showGate, setShowGate] = useState(true);
-  const [gameStarted, setGameStarted] = useState(false);
+  const [educationStarted, setEducationStarted] = useState(false);
   const [deathReason, setDeathReason] = useState("");
   const [username, setUsername] = useState("");
   const [connectionStatus, setConnectionStatus] = useState("connecting");
@@ -96,14 +96,14 @@ export default function AgarGame() {
 
   const createBlob = createBlobFactory(blobIdRef);
 
-  function setGameStartedValue(next) {
-    gameStartedRef.current = next;
-    setGameStarted(next);
+  function setEducationStartedValue(next) {
+    educationStartedRef.current = next;
+    setEducationStarted(next);
   }
 
   useEffect(() => {
-    console.info("[AgarGame] gameStarted state changed", { gameStarted });
-  }, [gameStarted]);
+    console.info("[AgarEducation] educationStarted state changed", { educationStarted });
+  }, [educationStarted]);
 
   function updateHudFromBlobs(blobs) {
     setParts(blobs.length);
@@ -167,7 +167,7 @@ export default function AgarGame() {
         },
       });
     } catch (error) {
-      console.error("[AgarGame] failed to send player_state", error);
+      console.error("[AgarEducation] failed to send player_state", error);
     }
   }
 
@@ -193,7 +193,7 @@ export default function AgarGame() {
 
       channel.untrack();
     } catch (error) {
-      console.error("[AgarGame] failed to send player_left", error);
+      console.error("[AgarEducation] failed to send player_left", error);
     }
   }
 
@@ -216,7 +216,7 @@ export default function AgarGame() {
         },
       });
     } catch (error) {
-      console.error("[AgarGame] failed to send player_dead", error);
+      console.error("[AgarEducation] failed to send player_dead", error);
     }
   }
 
@@ -228,7 +228,7 @@ export default function AgarGame() {
     }
   }
 
-  function resetGame({ includeObstacles = true } = {}) {
+  function resetEducation({ includeObstacles = true } = {}) {
     const canvas = canvasRef.current;
 
     if (!canvas) {
@@ -286,12 +286,12 @@ export default function AgarGame() {
     }
 
     isAliveRef.current = false;
-    setGameStartedValue(false);
+    setEducationStartedValue(false);
     spikeLogicStartedLoggedRef.current = false;
     sendPlayerLeave("dead");
     setDeathReason(`You were eaten by ${killerName}.`);
     setShowGate(true);
-    resetGame({ includeObstacles: false });
+    resetEducation({ includeObstacles: false });
   }
 
   function startRunWithUsername(name) {
@@ -301,7 +301,7 @@ export default function AgarGame() {
       return;
     }
 
-    console.info("[AgarGame] Start button clicked", { safeName });
+    console.info("[AgarEducation] Start button clicked", { safeName });
 
     try {
       leaveSentRef.current = false;
@@ -311,11 +311,11 @@ export default function AgarGame() {
       spikeLogicStartedLoggedRef.current = false;
       setUsername(safeName);
       setDeathReason("");
-      resetGame({ includeObstacles: true });
+      resetEducation({ includeObstacles: true });
 
-      setGameStartedValue(true);
+      setEducationStartedValue(true);
       setShowGate(false);
-      console.info("[AgarGame] Game started", { safeName });
+      console.info("[AgarEducation] Education started", { safeName });
 
       const channel = channelRef.current;
       if (channel && typeof channel.track === "function") {
@@ -325,16 +325,16 @@ export default function AgarGame() {
             username: safeName,
           });
         } catch (error) {
-          console.error("[AgarGame] failed to track presence", error);
+          console.error("[AgarEducation] failed to track presence", error);
         }
       }
 
       sendPlayerState(true);
     } catch (error) {
       isAliveRef.current = false;
-      setGameStartedValue(false);
-      console.error("[AgarGame] failed to start game", error);
-      setDeathReason("Failed to start game. Please try again.");
+      setEducationStartedValue(false);
+      console.error("[AgarEducation] failed to start education", error);
+      setDeathReason("Failed to start education. Please try again.");
       setShowGate(true);
     }
   }
@@ -377,7 +377,7 @@ export default function AgarGame() {
     }
 
     function handleKeyDown(event) {
-      if (!isAliveRef.current || !gameStartedRef.current) {
+      if (!isAliveRef.current || !educationStartedRef.current) {
         return;
       }
 
@@ -452,9 +452,9 @@ export default function AgarGame() {
       }
     }
 
-    function gameLoop() {
+    function educationLoop() {
       if (!rafReadyRef.current) {
-        animationRef.current = requestAnimationFrame(gameLoop);
+        animationRef.current = requestAnimationFrame(educationLoop);
         return;
       }
 
@@ -468,10 +468,10 @@ export default function AgarGame() {
       let blobs = blobsRef.current;
       const now = Date.now();
 
-      if (gameStartedRef.current && isAliveRef.current) {
+      if (educationStartedRef.current && isAliveRef.current) {
         if (!spikeLogicStartedLoggedRef.current) {
           spikeLogicStartedLoggedRef.current = true;
-          console.info("[AgarGame] Spike logic started");
+          console.info("[AgarEducation] Spike logic started");
         }
 
         const spikeState = updateSpikesAndWarnings({
@@ -486,7 +486,7 @@ export default function AgarGame() {
         warningZonesRef.current = spikeState.warnings;
       }
 
-      if (isAliveRef.current && gameStartedRef.current) {
+      if (isAliveRef.current && educationStartedRef.current) {
         updateBlobMovement(blobs, mouseTargetRef.current);
         separateOverlappingBlobs(blobs);
 
@@ -567,7 +567,7 @@ export default function AgarGame() {
       ctx.lineWidth = 5;
       ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
-      if (gameStartedRef.current) {
+      if (educationStartedRef.current) {
         drawWarningZones(ctx, warningZonesRef.current, now);
         drawSpikeBalls(ctx, spikesRef.current);
       }
@@ -601,7 +601,7 @@ export default function AgarGame() {
       }
 
       sendPlayerState();
-      animationRef.current = requestAnimationFrame(gameLoop);
+      animationRef.current = requestAnimationFrame(educationLoop);
     }
 
     async function setupRealtime() {
@@ -729,8 +729,8 @@ export default function AgarGame() {
     }
 
     resizeCanvas();
-    console.info("[AgarGame] App mounted");
-    resetGame({ includeObstacles: false });
+    console.info("[AgarEducation] App mounted");
+    resetEducation({ includeObstacles: false });
     setupRealtime();
 
     window.addEventListener("resize", resizeCanvas);
@@ -739,7 +739,7 @@ export default function AgarGame() {
     window.addEventListener("beforeunload", handleBeforeUnload);
     window.addEventListener("pagehide", handlePageHide);
 
-    gameLoop();
+    educationLoop();
 
     return () => {
       window.removeEventListener("resize", resizeCanvas);
@@ -763,10 +763,10 @@ export default function AgarGame() {
   return (
     <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4">
       <div className="mx-auto max-w-[1600px] space-y-3">
-        <GameHeader score={score} size={size} parts={parts} onlinePlayers={onlinePlayers} />
-        <GameArena canvasRef={canvasRef} isActive={gameStarted} />
-        <GameFooter
-          onRestart={() => resetGame({ includeObstacles: gameStartedRef.current })}
+        <EducationHeader score={score} size={size} parts={parts} onlinePlayers={onlinePlayers} />
+        <EducationArena canvasRef={canvasRef} isActive={educationStarted} />
+        <EducationFooter
+          onRestart={() => resetEducation({ includeObstacles: educationStartedRef.current })}
           username={username}
           connectionStatus={connectionStatus}
         />
