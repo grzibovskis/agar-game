@@ -75,6 +75,7 @@ export default function AgarEducation() {
   const playerColorRef = useRef("#22c55e");
   const lastBroadcastRef = useRef(0);
   const leaveSentRef = useRef(false);
+  const startCountdownTimerRef = useRef(null);
 
   const mouseTargetRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
   const cameraRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
@@ -93,6 +94,7 @@ export default function AgarEducation() {
   const [username, setUsername] = useState("");
   const [connectionStatus, setConnectionStatus] = useState("connecting");
   const [onlinePlayers, setOnlinePlayers] = useState(1);
+  const [startCountdown, setStartCountdown] = useState(0);
 
   const createBlob = createBlobFactory(blobIdRef);
 
@@ -287,11 +289,41 @@ export default function AgarEducation() {
 
     isAliveRef.current = false;
     setEducationStartedValue(false);
+    setStartCountdown(0);
     spikeLogicStartedLoggedRef.current = false;
     sendPlayerLeave("dead");
     setDeathReason(`You were eaten by ${killerName}.`);
     setShowGate(true);
     resetEducation({ includeObstacles: false });
+  }
+
+  function beginEducationRun(safeName) {
+    leaveSentRef.current = false;
+    playerNameRef.current = safeName;
+    playerColorRef.current = colorFromId(`${sessionIdRef.current}-${safeName}`);
+    isAliveRef.current = true;
+    spikeLogicStartedLoggedRef.current = false;
+    setUsername(safeName);
+    setDeathReason("");
+    resetEducation({ includeObstacles: true });
+
+    setEducationStartedValue(true);
+    setShowGate(false);
+    console.info("[AgarEducation] Education started", { safeName });
+
+    const channel = channelRef.current;
+    if (channel && typeof channel.track === "function") {
+      try {
+        channel.track({
+          sessionId: sessionIdRef.current,
+          username: safeName,
+        });
+      } catch (error) {
+        console.error("[AgarEducation] failed to track presence", error);
+      }
+    }
+
+    sendPlayerState(true);
   }
 
   function startRunWithUsername(name) {
@@ -304,35 +336,34 @@ export default function AgarEducation() {
     console.info("[AgarEducation] Start button clicked", { safeName });
 
     try {
-      leaveSentRef.current = false;
-      playerNameRef.current = safeName;
-      playerColorRef.current = colorFromId(`${sessionIdRef.current}-${safeName}`);
-      isAliveRef.current = true;
-      spikeLogicStartedLoggedRef.current = false;
       setUsername(safeName);
       setDeathReason("");
-      resetEducation({ includeObstacles: true });
-
-      setEducationStartedValue(true);
       setShowGate(false);
-      console.info("[AgarEducation] Education started", { safeName });
 
-      const channel = channelRef.current;
-      if (channel && typeof channel.track === "function") {
-        try {
-          channel.track({
-            sessionId: sessionIdRef.current,
-            username: safeName,
-          });
-        } catch (error) {
-          console.error("[AgarEducation] failed to track presence", error);
-        }
+      if (startCountdownTimerRef.current) {
+        clearInterval(startCountdownTimerRef.current);
       }
 
-      sendPlayerState(true);
+      setEducationStartedValue(false);
+      setStartCountdown(3);
+      resetEducation({ includeObstacles: false });
+
+      startCountdownTimerRef.current = setInterval(() => {
+        setStartCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(startCountdownTimerRef.current);
+            startCountdownTimerRef.current = null;
+            beginEducationRun(safeName);
+            return 0;
+          }
+
+          return prev - 1;
+        });
+      }, 1000);
     } catch (error) {
       isAliveRef.current = false;
       setEducationStartedValue(false);
+      setStartCountdown(0);
       console.error("[AgarEducation] failed to start education", error);
       setDeathReason("Failed to start education. Please try again.");
       setShowGate(true);
@@ -742,6 +773,11 @@ export default function AgarEducation() {
     educationLoop();
 
     return () => {
+      if (startCountdownTimerRef.current) {
+        clearInterval(startCountdownTimerRef.current);
+        startCountdownTimerRef.current = null;
+      }
+
       window.removeEventListener("resize", resizeCanvas);
       canvas.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("keydown", handleKeyDown);
@@ -782,6 +818,18 @@ export default function AgarEducation() {
         }
         onSubmit={startRunWithUsername}
       />
+
+      {!showGate && !educationStarted && startCountdown > 0 ? (
+        <div className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center">
+          <div className="rounded-2xl border border-slate-700 bg-slate-900/90 px-6 py-5 text-center shadow-xl backdrop-blur-sm">
+            <p className="text-sm uppercase tracking-wide text-slate-300">Starting In</p>
+            <p className="text-4xl font-bold text-white">{startCountdown}</p>
+            <p className="mt-2 text-sm text-slate-300">
+              Connecting multiplayer in background: {connectionStatus}
+            </p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
