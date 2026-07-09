@@ -7,31 +7,57 @@ export default function UsernameGate({
   title,
   message,
   defaultName = "",
-  busy = false,
   onSubmit,
 }) {
   const [name, setName] = useState(defaultName);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const trimmedName = name.trim();
+  const isDisabled = !trimmedName || isSubmitting;
 
   useEffect(() => {
     if (open) {
       setName(defaultName);
+      setIsSubmitting(false);
     }
   }, [defaultName, open]);
+
+  useEffect(() => {
+    console.info("[UsernameGate] state", {
+      username: name,
+      isSubmitting,
+      disabled: isDisabled,
+    });
+  }, [name, isSubmitting, isDisabled]);
 
   if (!open) {
     return null;
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
     const trimmed = name.trim().slice(0, 18);
 
-    if (!trimmed || busy || typeof onSubmit !== "function") {
+    console.info("[UsernameGate] Start button clicked", {
+      username: trimmed,
+      isSubmitting,
+      disabled: isDisabled,
+    });
+
+    if (!trimmed || isSubmitting || typeof onSubmit !== "function") {
       return;
     }
 
-    console.info("[UsernameGate] submit", { username: trimmed });
-    onSubmit(trimmed);
+    setIsSubmitting(true);
+
+    try {
+      console.info("[UsernameGate] onStart called", { username: trimmed });
+      await Promise.resolve(onSubmit(trimmed));
+    } catch (error) {
+      console.warn("[UsernameGate] realtime/Supabase start warning", error);
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -57,9 +83,9 @@ export default function UsernameGate({
           <button
             type="submit"
             className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={busy || !name.trim()}
+            disabled={isDisabled}
           >
-            {busy ? "Connecting..." : "Start Game"}
+            {isSubmitting ? "Starting..." : "Start Game"}
           </button>
         </form>
       </div>
