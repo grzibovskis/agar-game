@@ -69,6 +69,7 @@ export default function AgarGame() {
   const remotePlayersRef = useRef(new Map());
   const scoreRef = useRef(0);
   const isAliveRef = useRef(false);
+  const gameStartedRef = useRef(false);
   const playerNameRef = useRef("");
   const playerColorRef = useRef("#22c55e");
   const lastBroadcastRef = useRef(0);
@@ -87,12 +88,18 @@ export default function AgarGame() {
   const [parts, setParts] = useState(1);
   const [showGate, setShowGate] = useState(true);
   const [gateBusy, setGateBusy] = useState(false);
+  const [gameStarted, setGameStarted] = useState(false);
   const [deathReason, setDeathReason] = useState("");
   const [username, setUsername] = useState("");
   const [connectionStatus, setConnectionStatus] = useState("connecting");
   const [onlinePlayers, setOnlinePlayers] = useState(1);
 
   const createBlob = createBlobFactory(blobIdRef);
+
+  function setGameStartedValue(next) {
+    gameStartedRef.current = next;
+    setGameStarted(next);
+  }
 
   function updateHudFromBlobs(blobs) {
     setParts(blobs.length);
@@ -138,22 +145,26 @@ export default function AgarGame() {
 
     const local = getLocalCentroidAndRadius();
 
-    channel.send({
-      type: "broadcast",
-      event: "player_state",
-      payload: {
-        sessionId: sessionIdRef.current,
-        username: playerNameRef.current,
-        color: playerColorRef.current,
-        x: local.x,
-        y: local.y,
-        radius: local.radius,
-        parts: blobsRef.current.length,
-        blobs: serializeBlobs(blobsRef.current),
-        alive: true,
-        updatedAt: now,
-      },
-    });
+    try {
+      channel.send({
+        type: "broadcast",
+        event: "player_state",
+        payload: {
+          sessionId: sessionIdRef.current,
+          username: playerNameRef.current,
+          color: playerColorRef.current,
+          x: local.x,
+          y: local.y,
+          radius: local.radius,
+          parts: blobsRef.current.length,
+          blobs: serializeBlobs(blobsRef.current),
+          alive: true,
+          updatedAt: now,
+        },
+      });
+    } catch (error) {
+      console.error("[AgarGame] failed to send player_state", error);
+    }
   }
 
   function sendPlayerLeave(reason = "left") {
@@ -165,17 +176,21 @@ export default function AgarGame() {
 
     leaveSentRef.current = true;
 
-    channel.send({
-      type: "broadcast",
-      event: "player_left",
-      payload: {
-        sessionId: sessionIdRef.current,
-        reason,
-        at: Date.now(),
-      },
-    });
+    try {
+      channel.send({
+        type: "broadcast",
+        event: "player_left",
+        payload: {
+          sessionId: sessionIdRef.current,
+          reason,
+          at: Date.now(),
+        },
+      });
 
-    channel.untrack();
+      channel.untrack();
+    } catch (error) {
+      console.error("[AgarGame] failed to send player_left", error);
+    }
   }
 
   function sendPlayerDeath(victimSessionId, killerSessionId, killerName) {
@@ -185,16 +200,20 @@ export default function AgarGame() {
       return;
     }
 
-    channel.send({
-      type: "broadcast",
-      event: "player_dead",
-      payload: {
-        victimSessionId,
-        killerSessionId,
-        killerName,
-        at: Date.now(),
-      },
-    });
+    try {
+      channel.send({
+        type: "broadcast",
+        event: "player_dead",
+        payload: {
+          victimSessionId,
+          killerSessionId,
+          killerName,
+          at: Date.now(),
+        },
+      });
+    } catch (error) {
+      console.error("[AgarGame] failed to send player_dead", error);
+    }
   }
 
   function clearRemotePlayer(sessionId) {
@@ -205,7 +224,7 @@ export default function AgarGame() {
     }
   }
 
-  function resetGame() {
+  function resetGame({ includeObstacles = true } = {}) {
     const canvas = canvasRef.current;
 
     if (!canvas) {
@@ -214,18 +233,24 @@ export default function AgarGame() {
 
     const centerX = WORLD_WIDTH / 2;
     const centerY = WORLD_HEIGHT / 2;
-    const now = Date.now();
-
-    spikesRef.current = createInitialSpikes(SPIKE_MAX_COUNT, now, WORLD_WIDTH, WORLD_HEIGHT);
-    warningZonesRef.current = [];
+    if (includeObstacles) {
+      const now = Date.now();
+      spikesRef.current = createInitialSpikes(SPIKE_MAX_COUNT, now, WORLD_WIDTH, WORLD_HEIGHT);
+      warningZonesRef.current = [];
+    } else {
+      spikesRef.current = [];
+      warningZonesRef.current = [];
+    }
 
     blobsRef.current = [createBlob(centerX, centerY, 22)];
-    foodRef.current = createFood(
-      FOOD_TARGET,
-      WORLD_WIDTH,
-      WORLD_HEIGHT,
-      getRestrictedZones(spikesRef.current, warningZonesRef.current)
-    );
+    foodRef.current = includeObstacles
+      ? createFood(
+          FOOD_TARGET,
+          WORLD_WIDTH,
+          WORLD_HEIGHT,
+          getRestrictedZones(spikesRef.current, warningZonesRef.current)
+        )
+      : [];
 
     const viewWidth = canvas.clientWidth || 1280;
     const viewHeight = canvas.clientHeight || 720;
@@ -257,11 +282,12 @@ export default function AgarGame() {
     }
 
     isAliveRef.current = false;
+    setGameStartedValue(false);
     sendPlayerLeave("dead");
     setDeathReason(`You were eaten by ${killerName}.`);
     setShowGate(true);
     setGateBusy(false);
-    resetGame();
+    resetGame({ includeObstacles: false });
   }
 
   function startRunWithUsername(name) {
@@ -271,26 +297,39 @@ export default function AgarGame() {
       return;
     }
 
+    console.info("[AgarGame] Start button clicked", { safeName });
     setGateBusy(true);
-    leaveSentRef.current = false;
-    playerNameRef.current = safeName;
-    playerColorRef.current = colorFromId(`${sessionIdRef.current}-${safeName}`);
-    isAliveRef.current = true;
-    setUsername(safeName);
-    setDeathReason("");
-    resetGame();
 
-    const channel = channelRef.current;
-    if (channel) {
-      channel.track({
-        sessionId: sessionIdRef.current,
-        username: safeName,
-      });
+    try {
+      leaveSentRef.current = false;
+      playerNameRef.current = safeName;
+      playerColorRef.current = colorFromId(`${sessionIdRef.current}-${safeName}`);
+      isAliveRef.current = true;
+      setUsername(safeName);
+      setDeathReason("");
+      resetGame({ includeObstacles: true });
+
+      const channel = channelRef.current;
+      if (channel) {
+        channel.track({
+          sessionId: sessionIdRef.current,
+          username: safeName,
+        });
+      }
+
+      sendPlayerState(true);
+      setGameStartedValue(true);
+      setShowGate(false);
+      console.info("[AgarGame] Game started", { safeName });
+    } catch (error) {
+      isAliveRef.current = false;
+      setGameStartedValue(false);
+      console.error("[AgarGame] failed to start game", error);
+      setDeathReason("Failed to start game. Please try again.");
+      setShowGate(true);
+    } finally {
+      setGateBusy(false);
     }
-
-    sendPlayerState(true);
-    setShowGate(false);
-    setGateBusy(false);
   }
 
   useEffect(() => {
@@ -331,6 +370,10 @@ export default function AgarGame() {
     }
 
     function handleKeyDown(event) {
+      if (!isAliveRef.current || !gameStartedRef.current) {
+        return;
+      }
+
       if (event.code !== "Space") {
         return;
       }
@@ -418,18 +461,20 @@ export default function AgarGame() {
       let blobs = blobsRef.current;
       const now = Date.now();
 
-      const spikeState = updateSpikesAndWarnings({
-        spikes: spikesRef.current,
-        warnings: warningZonesRef.current,
-        now,
-        worldWidth: WORLD_WIDTH,
-        worldHeight: WORLD_HEIGHT,
-      });
+      if (gameStartedRef.current && isAliveRef.current) {
+        const spikeState = updateSpikesAndWarnings({
+          spikes: spikesRef.current,
+          warnings: warningZonesRef.current,
+          now,
+          worldWidth: WORLD_WIDTH,
+          worldHeight: WORLD_HEIGHT,
+        });
 
-      spikesRef.current = spikeState.spikes;
-      warningZonesRef.current = spikeState.warnings;
+        spikesRef.current = spikeState.spikes;
+        warningZonesRef.current = spikeState.warnings;
+      }
 
-      if (isAliveRef.current) {
+      if (isAliveRef.current && gameStartedRef.current) {
         updateBlobMovement(blobs, mouseTargetRef.current);
         separateOverlappingBlobs(blobs);
 
@@ -510,8 +555,10 @@ export default function AgarGame() {
       ctx.lineWidth = 5;
       ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
-      drawWarningZones(ctx, warningZonesRef.current, now);
-      drawSpikeBalls(ctx, spikesRef.current);
+      if (gameStartedRef.current) {
+        drawWarningZones(ctx, warningZonesRef.current, now);
+        drawSpikeBalls(ctx, spikesRef.current);
+      }
 
       for (const point of foodRef.current) {
         drawCircle(ctx, point.x, point.y, point.radius, point.color);
@@ -670,7 +717,7 @@ export default function AgarGame() {
     }
 
     resizeCanvas();
-    resetGame();
+    resetGame({ includeObstacles: false });
     setupRealtime();
 
     window.addEventListener("resize", resizeCanvas);
@@ -704,8 +751,12 @@ export default function AgarGame() {
     <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4">
       <div className="mx-auto max-w-[1600px] space-y-3">
         <GameHeader score={score} size={size} parts={parts} onlinePlayers={onlinePlayers} />
-        <GameArena canvasRef={canvasRef} />
-        <GameFooter onRestart={resetGame} username={username} connectionStatus={connectionStatus} />
+        <GameArena canvasRef={canvasRef} isActive={gameStarted} />
+        <GameFooter
+          onRestart={() => resetGame({ includeObstacles: gameStartedRef.current })}
+          username={username}
+          connectionStatus={connectionStatus}
+        />
       </div>
 
       <UsernameGate
