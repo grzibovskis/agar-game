@@ -12,7 +12,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Arag SubCustody Game - by Income Team",
+  title: "Arag SubCustody Game - by Income Team ",
   description: "Eat you enemies and grow bigger in this multiplayer game. ",
 };
 
