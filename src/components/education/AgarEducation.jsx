@@ -15,7 +15,6 @@ import {
 } from "@/components/education/logic/constants";
 import { clamp } from "@/components/education/logic/math";
 import {
-  createBlobFactory,
   getBlobCentroid,
   getCombinedRadius,
   mergeClosestPairsOnce,
@@ -25,7 +24,6 @@ import {
   consumeFood,
   resolvePvpCombat,
   separateOverlappingBlobs,
-  splitAndJump,
   updateBlobMovement,
 } from "@/components/education/logic/movementAttackLogic";
 import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer } from "@/components/education/logic/playerAppearance";
@@ -36,7 +34,6 @@ import {
   findSpikeCollision,
   getRestrictedZones,
   keepBlobsOutsideWarnings,
-  splitToMaxCells,
   updateSpikesAndWarnings,
 } from "@/components/education/logic/spikeLogic";
 import EducationHeader from "@/components/layout/EducationHeader";
@@ -76,6 +73,7 @@ export default function AgarEducation() {
   const lastBroadcastRef = useRef(0);
   const leaveSentRef = useRef(false);
   const startCountdownTimerRef = useRef(null);
+  const lastPeerContactAtRef = useRef(new Map());
 
   const mouseTargetRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
   const cameraRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
@@ -96,7 +94,19 @@ export default function AgarEducation() {
   const [onlinePlayers, setOnlinePlayers] = useState(1);
   const [startCountdown, setStartCountdown] = useState(0);
 
-  const createBlob = createBlobFactory(blobIdRef);
+  function createBlob(x, y, radius, vx = 0, vy = 0) {
+    const id = blobIdRef.current;
+    blobIdRef.current += 1;
+
+    return {
+      id,
+      x,
+      y,
+      radius,
+      vx,
+      vy,
+    };
+  }
 
   function setEducationStartedValue(next) {
     educationStartedRef.current = next;
@@ -199,31 +209,9 @@ export default function AgarEducation() {
     }
   }
 
-  function sendPlayerDeath(victimSessionId, killerSessionId, killerName) {
-    const channel = channelRef.current;
-
-    if (!channel) {
-      return;
-    }
-
-    try {
-      channel.send({
-        type: "broadcast",
-        event: "player_dead",
-        payload: {
-          victimSessionId,
-          killerSessionId,
-          killerName,
-          at: Date.now(),
-        },
-      });
-    } catch (error) {
-      console.error("[AgarEducation] failed to send player_dead", error);
-    }
-  }
-
   function clearRemotePlayer(sessionId) {
     const deleted = remotePlayersRef.current.delete(sessionId);
+    lastPeerContactAtRef.current.delete(sessionId);
 
     if (deleted) {
       setOnlinePlayers(remotePlayersRef.current.size + 1);
@@ -280,21 +268,6 @@ export default function AgarEducation() {
 
     setScoreValue(0);
     updateHudFromBlobs(blobsRef.current);
-  }
-
-  function handleDefeat(killerName = "Another player") {
-    if (!isAliveRef.current) {
-      return;
-    }
-
-    isAliveRef.current = false;
-    setEducationStartedValue(false);
-    setStartCountdown(0);
-    spikeLogicStartedLoggedRef.current = false;
-    sendPlayerLeave("dead");
-    setDeathReason(`You were eaten by ${killerName}.`);
-    setShowGate(true);
-    resetEducation({ includeObstacles: false });
   }
 
   function beginEducationRun(safeName) {
@@ -418,17 +391,11 @@ export default function AgarEducation() {
 
       event.preventDefault();
 
-      const beforeCount = blobsRef.current.length;
-      const splitBlobs = splitAndJump(blobsRef.current, mouseTargetRef.current, createBlob);
-      const didSplit = splitBlobs.length > beforeCount;
-
-      blobsRef.current = splitBlobs;
-      updateHudFromBlobs(splitBlobs);
-
-      if (didSplit) {
-        mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
-        sendPlayerState(true);
-      }
+      const center = getBlobCentroid(blobsRef.current, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+      mouseTargetRef.current = {
+        x: center.x,
+        y: center.y,
+      };
     }
 
     function pruneStaleRemotePlayers() {
@@ -526,17 +493,24 @@ export default function AgarEducation() {
         const hitSpike = findSpikeCollision(blobs, spikesRef.current);
 
         if (hitSpike) {
-          const beforeCount = blobs.length;
-          const splitToMax = splitToMaxCells(blobs, createBlob, hitSpike);
-          const didSplit = splitToMax.length > beforeCount;
-          blobsRef.current = splitToMax;
-          blobs = splitToMax;
+          for (const blob of blobs) {
+            const dx = blob.x - hitSpike.x;
+            const dy = blob.y - hitSpike.y;
+            const distance = Math.hypot(dx, dy) || 1;
+            const nx = dx / distance;
+            const ny = dy / distance;
 
-          if (didSplit) {
-            mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
-            updateHudFromBlobs(splitToMax);
-            sendPlayerState(true);
+            blob.vx += nx * 1.1;
+            blob.vy += ny * 1.1;
+
+            if (distance < blob.radius + hitSpike.radius + 4) {
+              blob.x += nx * 4;
+              blob.y += ny * 4;
+            }
           }
+
+          setScoreValue(Math.max(0, scoreRef.current - 1));
+          sendPlayerState(true);
         }
 
         const { gainedScore, remainingFood } = consumeFood(blobs, foodRef.current);
@@ -553,20 +527,16 @@ export default function AgarEducation() {
         }
 
         resolvePvpCombat(blobs, [...remotePlayersRef.current.values()], {
-          onLocalEatRemote(remote) {
-            clearRemotePlayer(remote.sessionId);
-            setScoreValue(scoreRef.current + Math.max(10, Math.round(remote.radius)));
-            updateHudFromBlobs(blobs);
-            sendPlayerDeath(remote.sessionId, sessionIdRef.current, playerNameRef.current || "Unknown");
-            sendPlayerState(true);
-          },
-          onRemoteEatLocal(remote) {
-            sendPlayerDeath(
-              sessionIdRef.current,
-              remote.sessionId,
-              remote.username || "Another player"
-            );
-            handleDefeat(remote.username || "Another player");
+          onContact(remote) {
+            const nowTs = Date.now();
+            const previous = lastPeerContactAtRef.current.get(remote.sessionId) || 0;
+
+            if (nowTs - previous < 1_500) {
+              return;
+            }
+
+            lastPeerContactAtRef.current.set(remote.sessionId, nowTs);
+            setScoreValue(scoreRef.current + 2);
           },
         });
       }
@@ -676,7 +646,7 @@ export default function AgarEducation() {
 
             const next = {
               sessionId: payload.sessionId,
-              username: payload.username || "Player",
+              username: payload.username || "Participant",
               color: payload.color || colorFromId(payload.sessionId),
               x: payload.x,
               y: payload.y,
@@ -702,17 +672,6 @@ export default function AgarEducation() {
             remotePlayersRef.current.set(payload.sessionId, next);
 
             setOnlinePlayers(remotePlayersRef.current.size + 1);
-          })
-          .on("broadcast", { event: "player_dead" }, ({ payload }) => {
-            if (!payload) {
-              return;
-            }
-
-            clearRemotePlayer(payload.victimSessionId);
-
-            if (payload.victimSessionId === sessionIdRef.current) {
-              handleDefeat(payload.killerName || "Another player");
-            }
           })
           .on("broadcast", { event: "player_left" }, ({ payload }) => {
             if (!payload || payload.sessionId === sessionIdRef.current) {
@@ -809,12 +768,13 @@ export default function AgarEducation() {
       </div>
 
       <UsernameGate
+        key={`${showGate ? "open" : "closed"}-${username}-${deathReason}`}
         open={showGate}
         defaultName={username}
-        title={deathReason ? "You Were Eaten" : "Join Multiplayer Arena"}
+        title={deathReason ? "Session Ended" : "Join Shared Simulation"}
         message={
           deathReason ||
-          "Enter your username to start. Other players can join the same arena and play live."
+          "Enter your username to start. Other learners can join the same simulation live."
         }
         onSubmit={startRunWithUsername}
       />
@@ -825,7 +785,7 @@ export default function AgarEducation() {
             <p className="text-sm uppercase tracking-wide text-slate-300">Starting In</p>
             <p className="text-4xl font-bold text-white">{startCountdown}</p>
             <p className="mt-2 text-sm text-slate-300">
-              Connecting multiplayer in background: {connectionStatus}
+              Connecting shared session in background: {connectionStatus}
             </p>
           </div>
         </div>

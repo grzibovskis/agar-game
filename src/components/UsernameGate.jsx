@@ -17,14 +17,6 @@ export default function UsernameGate({
   const isDisabled = !trimmedName || isSubmitting;
 
   useEffect(() => {
-    if (open) {
-      setName(defaultName);
-      setIsSubmitting(false);
-      setShowConfirmPopup(false);
-    }
-  }, [defaultName, open]);
-
-  useEffect(() => {
     console.info("[UsernameGate] state", {
       username: name,
       isSubmitting,
@@ -106,7 +98,7 @@ export default function UsernameGate({
             className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={isDisabled}
           >
-            {isSubmitting ? "Starting..." : "Start Game"}
+            {isSubmitting ? "Starting..." : "Start Session"}
           </button>
         </form>
       </div>
@@ -115,11 +107,11 @@ export default function UsernameGate({
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-4 pointer-events-auto">
           <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
             <h3 className="text-xl font-bold text-white">
-              Ready to start game?
+              Ready to start session?
             </h3>
 
             <p className="mt-2 text-sm text-slate-300">
-              Are you sure you want to start the game as{" "}
+              Are you sure you want to start the session as{" "}
               <span className="font-semibold text-emerald-300">
                 {trimmedName}
               </span>
