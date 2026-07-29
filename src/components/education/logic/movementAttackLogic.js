@@ -156,23 +156,34 @@ export function consumeFood(blobs, food) {
 }
 
 export function resolvePvpCombat(localBlobs, remotes, handlers) {
-  const { onLocalEatRemote, onRemoteEatLocal } = handlers;
+  const { onLocalEatRemoteBlob } = handlers;
 
   for (const remote of remotes) {
-    for (const blob of localBlobs) {
-      const dx = blob.x - remote.x;
-      const dy = blob.y - remote.y;
-      const distance = Math.hypot(dx, dy);
+    const remoteBlobs = Array.isArray(remote.blobs) && remote.blobs.length
+      ? remote.blobs
+      : [{ x: remote.x, y: remote.y, radius: remote.radius }];
 
-      if (canEatCircle(blob.radius, remote.radius, distance)) {
-        blob.radius = radiusFromArea(blobArea(blob.radius) + blobArea(remote.radius) * 0.9);
-        onLocalEatRemote(remote);
-        return;
-      }
+    for (let localIndex = 0; localIndex < localBlobs.length; localIndex += 1) {
+      const localBlob = localBlobs[localIndex];
 
-      if (canEatCircle(remote.radius, blob.radius, distance)) {
-        onRemoteEatLocal(remote);
-        return;
+      for (let remoteIndex = 0; remoteIndex < remoteBlobs.length; remoteIndex += 1) {
+        const remoteBlob = remoteBlobs[remoteIndex];
+        const dx = localBlob.x - remoteBlob.x;
+        const dy = localBlob.y - remoteBlob.y;
+        const distance = Math.hypot(dx, dy);
+
+        if (canEatCircle(localBlob.radius, remoteBlob.radius, distance)) {
+          localBlob.radius = radiusFromArea(
+            blobArea(localBlob.radius) + blobArea(remoteBlob.radius) * 0.9
+          );
+
+          if (typeof onLocalEatRemoteBlob === "function") {
+            onLocalEatRemoteBlob(remote, remoteIndex, remoteBlob, localIndex, localBlob);
+          }
+
+          return;
+        }
+
       }
     }
   }
