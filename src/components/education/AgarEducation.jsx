@@ -348,7 +348,7 @@ export default function AgarEducation() {
     sendPlayerState(true);
   }
 
-  function applyRemoteBlobLoss(remoteSessionId, remoteBlobIndex) {
+  function applyRemoteBlobLoss(remoteSessionId, remoteBlobIndex, remoteBlobSnapshot = null) {
     const remote = remotePlayersRef.current.get(remoteSessionId);
 
     if (!remote) {
@@ -362,7 +362,26 @@ export default function AgarEducation() {
       return null;
     }
 
-    const safeIndex = Math.max(0, Math.min(remoteBlobIndex, blobs.length - 1));
+    let safeIndex = Math.max(0, Math.min(remoteBlobIndex, blobs.length - 1));
+
+    if (remoteBlobSnapshot) {
+      let bestScore = Infinity;
+
+      for (let i = 0; i < blobs.length; i += 1) {
+        const blob = blobs[i];
+        const dx = blob.x - remoteBlobSnapshot.x;
+        const dy = blob.y - remoteBlobSnapshot.y;
+        const distScore = Math.hypot(dx, dy);
+        const radiusScore = Math.abs(blob.radius - remoteBlobSnapshot.radius) * 4;
+        const totalScore = distScore + radiusScore;
+
+        if (totalScore < bestScore) {
+          bestScore = totalScore;
+          safeIndex = i;
+        }
+      }
+    }
+
     const eatenBlob = blobs[safeIndex];
     const nextBlobs = blobs.filter((_, index) => index !== safeIndex);
 
@@ -695,7 +714,8 @@ export default function AgarEducation() {
 
         resolvePvpCombat(blobs, [...remotePlayersRef.current.values()], {
           onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
-            const eatenBlob = applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex) || remoteBlob;
+            const eatenBlob =
+              applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex, remoteBlob) || remoteBlob;
             setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
             updateHudFromBlobs(blobs);
             sendPlayerBlobEaten(
@@ -705,31 +725,7 @@ export default function AgarEducation() {
               eatenBlob
             );
 
-            const remoteAfterHit = remotePlayersRef.current.get(remote.sessionId);
-            if (!remoteAfterHit || !remoteAfterHit.blobs?.length) {
-              sendPlayerDeath(remote.sessionId, sessionIdRef.current, playerNameRef.current || "Unknown");
-            }
-
             sendPlayerState(true);
-          },
-          onRemoteEatLocalBlob(remote, localBlob) {
-            const localCountBefore = blobsRef.current.length;
-            const eatenSnapshot = {
-              x: localBlob.x,
-              y: localBlob.y,
-              radius: localBlob.radius,
-            };
-
-            applyLocalBlobLoss(eatenSnapshot);
-
-            if (localCountBefore <= 1 || !blobsRef.current.length) {
-              sendPlayerDeath(
-                sessionIdRef.current,
-                remote.sessionId,
-                remote.username || "Another player"
-              );
-              handleDefeat(remote.username || "Another player");
-            }
           },
         });
       }

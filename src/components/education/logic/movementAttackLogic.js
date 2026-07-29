@@ -156,7 +156,7 @@ export function consumeFood(blobs, food) {
 }
 
 export function resolvePvpCombat(localBlobs, remotes, handlers) {
-  const { onLocalEatRemoteBlob, onRemoteEatLocalBlob } = handlers;
+  const { onLocalEatRemoteBlob } = handlers;
 
   for (const remote of remotes) {
     const remoteBlobs = Array.isArray(remote.blobs) && remote.blobs.length
@@ -184,13 +184,6 @@ export function resolvePvpCombat(localBlobs, remotes, handlers) {
           return;
         }
 
-        if (canEatCircle(remoteBlob.radius, localBlob.radius, distance)) {
-          if (typeof onRemoteEatLocalBlob === "function") {
-            onRemoteEatLocalBlob(remote, localBlob, remoteIndex, remoteBlob);
-          }
-
-          return;
-        }
       }
     }
   }
