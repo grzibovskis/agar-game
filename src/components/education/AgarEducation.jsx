@@ -58,6 +58,23 @@ function serializeBlobs(blobs) {
   return blobs.map((blob) => [round1(blob.x), round1(blob.y), round1(blob.radius)]);
 }
 
+function summarizeBlobs(blobs, fallbackX = WORLD_WIDTH / 2, fallbackY = WORLD_HEIGHT / 2) {
+  if (!blobs.length) {
+    return {
+      x: fallbackX,
+      y: fallbackY,
+      radius: 22,
+      parts: 0,
+    };
+  }
+
+  return {
+    ...getBlobCentroid(blobs, fallbackX, fallbackY),
+    radius: getCombinedRadius(blobs),
+    parts: blobs.length,
+  };
+}
+
 export default function AgarEducation() {
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
@@ -233,6 +250,34 @@ export default function AgarEducation() {
     }
   }
 
+  function sendPlayerBlobEaten(victimSessionId, killerSessionId, killerName, eatenBlob) {
+    const channel = channelRef.current;
+
+    if (!channel || !eatenBlob) {
+      return;
+    }
+
+    try {
+      channel.send({
+        type: "broadcast",
+        event: "player_blob_eaten",
+        payload: {
+          victimSessionId,
+          killerSessionId,
+          killerName,
+          blob: {
+            x: round1(eatenBlob.x),
+            y: round1(eatenBlob.y),
+            radius: round1(eatenBlob.radius),
+          },
+          at: Date.now(),
+        },
+      });
+    } catch (error) {
+      console.error("[AgarEducation] failed to send player_blob_eaten", error);
+    }
+  }
+
   function clearRemotePlayer(sessionId) {
     const deleted = remotePlayersRef.current.delete(sessionId);
 
@@ -254,6 +299,91 @@ export default function AgarEducation() {
     setDeathReason(`Session ended after collision with ${killerName}.`);
     setShowGate(true);
     resetEducation({ includeObstacles: false });
+  }
+
+  function applyLocalBlobLoss(eatenBlobSnapshot = null) {
+    if (!isAliveRef.current) {
+      return;
+    }
+
+    const current = blobsRef.current;
+
+    if (!current.length) {
+      return;
+    }
+
+    let removeIndex = current.length - 1;
+
+    if (eatenBlobSnapshot) {
+      let bestScore = Infinity;
+
+      for (let i = 0; i < current.length; i += 1) {
+        const blob = current[i];
+        const dx = blob.x - eatenBlobSnapshot.x;
+        const dy = blob.y - eatenBlobSnapshot.y;
+        const distScore = Math.hypot(dx, dy);
+        const radiusScore = Math.abs(blob.radius - eatenBlobSnapshot.radius) * 4;
+        const totalScore = distScore + radiusScore;
+
+        if (totalScore < bestScore) {
+          bestScore = totalScore;
+          removeIndex = i;
+        }
+      }
+    }
+
+    const next = current.filter((_, index) => index !== removeIndex);
+    blobsRef.current = next;
+
+    if (!next.length) {
+      return;
+    }
+
+    updateHudFromBlobs(next);
+
+    if (next.length > 1 && !mergeStateRef.current.nextMergeAt) {
+      mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
+    }
+
+    sendPlayerState(true);
+  }
+
+  function applyRemoteBlobLoss(remoteSessionId, remoteBlobIndex) {
+    const remote = remotePlayersRef.current.get(remoteSessionId);
+
+    if (!remote) {
+      return null;
+    }
+
+    const blobs = Array.isArray(remote.blobs) ? remote.blobs : [];
+
+    if (!blobs.length) {
+      clearRemotePlayer(remoteSessionId);
+      return null;
+    }
+
+    const safeIndex = Math.max(0, Math.min(remoteBlobIndex, blobs.length - 1));
+    const eatenBlob = blobs[safeIndex];
+    const nextBlobs = blobs.filter((_, index) => index !== safeIndex);
+
+    if (!nextBlobs.length) {
+      clearRemotePlayer(remoteSessionId);
+      return eatenBlob;
+    }
+
+    const summary = summarizeBlobs(nextBlobs, remote.x, remote.y);
+
+    remotePlayersRef.current.set(remoteSessionId, {
+      ...remote,
+      x: summary.x,
+      y: summary.y,
+      radius: summary.radius,
+      parts: summary.parts,
+      blobs: nextBlobs,
+      updatedAt: Date.now(),
+    });
+
+    return eatenBlob;
   }
 
   function resetEducation({ includeObstacles = true } = {}) {
@@ -564,20 +694,42 @@ export default function AgarEducation() {
         }
 
         resolvePvpCombat(blobs, [...remotePlayersRef.current.values()], {
-          onLocalEatRemote(remote) {
-            clearRemotePlayer(remote.sessionId);
-            setScoreValue(scoreRef.current + Math.max(10, Math.round(remote.radius)));
+          onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
+            const eatenBlob = applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex) || remoteBlob;
+            setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
             updateHudFromBlobs(blobs);
-            sendPlayerDeath(remote.sessionId, sessionIdRef.current, playerNameRef.current || "Unknown");
+            sendPlayerBlobEaten(
+              remote.sessionId,
+              sessionIdRef.current,
+              playerNameRef.current || "Unknown",
+              eatenBlob
+            );
+
+            const remoteAfterHit = remotePlayersRef.current.get(remote.sessionId);
+            if (!remoteAfterHit || !remoteAfterHit.blobs?.length) {
+              sendPlayerDeath(remote.sessionId, sessionIdRef.current, playerNameRef.current || "Unknown");
+            }
+
             sendPlayerState(true);
           },
-          onRemoteEatLocal(remote) {
-            sendPlayerDeath(
-              sessionIdRef.current,
-              remote.sessionId,
-              remote.username || "Another player"
-            );
-            handleDefeat(remote.username || "Another player");
+          onRemoteEatLocalBlob(remote, localBlob) {
+            const localCountBefore = blobsRef.current.length;
+            const eatenSnapshot = {
+              x: localBlob.x,
+              y: localBlob.y,
+              radius: localBlob.radius,
+            };
+
+            applyLocalBlobLoss(eatenSnapshot);
+
+            if (localCountBefore <= 1 || !blobsRef.current.length) {
+              sendPlayerDeath(
+                sessionIdRef.current,
+                remote.sessionId,
+                remote.username || "Another player"
+              );
+              handleDefeat(remote.username || "Another player");
+            }
           },
         });
       }
@@ -722,6 +874,23 @@ export default function AgarEducation() {
             clearRemotePlayer(payload.victimSessionId);
 
             if (payload.victimSessionId === sessionIdRef.current) {
+              handleDefeat(payload.killerName || "Another player");
+            }
+          })
+          .on("broadcast", { event: "player_blob_eaten" }, ({ payload }) => {
+            if (!payload || payload.victimSessionId !== sessionIdRef.current || !isAliveRef.current) {
+              return;
+            }
+
+            const localCountBefore = blobsRef.current.length;
+            applyLocalBlobLoss(payload.blob);
+
+            if (localCountBefore <= 1 || !blobsRef.current.length) {
+              sendPlayerDeath(
+                sessionIdRef.current,
+                payload.killerSessionId,
+                payload.killerName || "Another player"
+              );
               handleDefeat(payload.killerName || "Another player");
             }
           })
