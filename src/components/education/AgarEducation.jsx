@@ -24,6 +24,7 @@ import {
   consumeFood,
   resolvePvpCombat,
   separateOverlappingBlobs,
+  splitAndJump,
   updateBlobMovement,
 } from "@/components/education/logic/movementAttackLogic";
 import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer } from "@/components/education/logic/playerAppearance";
@@ -34,6 +35,7 @@ import {
   findSpikeCollision,
   getRestrictedZones,
   keepBlobsOutsideWarnings,
+  splitToMaxCells,
   updateSpikesAndWarnings,
 } from "@/components/education/logic/spikeLogic";
 import EducationHeader from "@/components/layout/EducationHeader";
@@ -73,7 +75,6 @@ export default function AgarEducation() {
   const lastBroadcastRef = useRef(0);
   const leaveSentRef = useRef(false);
   const startCountdownTimerRef = useRef(null);
-  const lastPeerContactAtRef = useRef(new Map());
 
   const mouseTargetRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
   const cameraRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
@@ -209,13 +210,50 @@ export default function AgarEducation() {
     }
   }
 
+  function sendPlayerDeath(victimSessionId, killerSessionId, killerName) {
+    const channel = channelRef.current;
+
+    if (!channel) {
+      return;
+    }
+
+    try {
+      channel.send({
+        type: "broadcast",
+        event: "player_dead",
+        payload: {
+          victimSessionId,
+          killerSessionId,
+          killerName,
+          at: Date.now(),
+        },
+      });
+    } catch (error) {
+      console.error("[AgarEducation] failed to send player_dead", error);
+    }
+  }
+
   function clearRemotePlayer(sessionId) {
     const deleted = remotePlayersRef.current.delete(sessionId);
-    lastPeerContactAtRef.current.delete(sessionId);
 
     if (deleted) {
       setOnlinePlayers(remotePlayersRef.current.size + 1);
     }
+  }
+
+  function handleDefeat(killerName = "Another player") {
+    if (!isAliveRef.current) {
+      return;
+    }
+
+    isAliveRef.current = false;
+    setEducationStartedValue(false);
+    setStartCountdown(0);
+    spikeLogicStartedLoggedRef.current = false;
+    sendPlayerLeave("dead");
+    setDeathReason(`Session ended after collision with ${killerName}.`);
+    setShowGate(true);
+    resetEducation({ includeObstacles: false });
   }
 
   function resetEducation({ includeObstacles = true } = {}) {
@@ -391,11 +429,17 @@ export default function AgarEducation() {
 
       event.preventDefault();
 
-      const center = getBlobCentroid(blobsRef.current, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-      mouseTargetRef.current = {
-        x: center.x,
-        y: center.y,
-      };
+      const beforeCount = blobsRef.current.length;
+      const splitBlobs = splitAndJump(blobsRef.current, mouseTargetRef.current, createBlob);
+      const didSplit = splitBlobs.length > beforeCount;
+
+      blobsRef.current = splitBlobs;
+      updateHudFromBlobs(splitBlobs);
+
+      if (didSplit) {
+        mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
+        sendPlayerState(true);
+      }
     }
 
     function pruneStaleRemotePlayers() {
@@ -493,24 +537,17 @@ export default function AgarEducation() {
         const hitSpike = findSpikeCollision(blobs, spikesRef.current);
 
         if (hitSpike) {
-          for (const blob of blobs) {
-            const dx = blob.x - hitSpike.x;
-            const dy = blob.y - hitSpike.y;
-            const distance = Math.hypot(dx, dy) || 1;
-            const nx = dx / distance;
-            const ny = dy / distance;
+          const beforeCount = blobs.length;
+          const splitToMax = splitToMaxCells(blobs, createBlob, hitSpike);
+          const didSplit = splitToMax.length > beforeCount;
+          blobsRef.current = splitToMax;
+          blobs = splitToMax;
 
-            blob.vx += nx * 1.1;
-            blob.vy += ny * 1.1;
-
-            if (distance < blob.radius + hitSpike.radius + 4) {
-              blob.x += nx * 4;
-              blob.y += ny * 4;
-            }
+          if (didSplit) {
+            mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
+            updateHudFromBlobs(splitToMax);
+            sendPlayerState(true);
           }
-
-          setScoreValue(Math.max(0, scoreRef.current - 1));
-          sendPlayerState(true);
         }
 
         const { gainedScore, remainingFood } = consumeFood(blobs, foodRef.current);
@@ -527,16 +564,20 @@ export default function AgarEducation() {
         }
 
         resolvePvpCombat(blobs, [...remotePlayersRef.current.values()], {
-          onContact(remote) {
-            const nowTs = Date.now();
-            const previous = lastPeerContactAtRef.current.get(remote.sessionId) || 0;
-
-            if (nowTs - previous < 1_500) {
-              return;
-            }
-
-            lastPeerContactAtRef.current.set(remote.sessionId, nowTs);
-            setScoreValue(scoreRef.current + 2);
+          onLocalEatRemote(remote) {
+            clearRemotePlayer(remote.sessionId);
+            setScoreValue(scoreRef.current + Math.max(10, Math.round(remote.radius)));
+            updateHudFromBlobs(blobs);
+            sendPlayerDeath(remote.sessionId, sessionIdRef.current, playerNameRef.current || "Unknown");
+            sendPlayerState(true);
+          },
+          onRemoteEatLocal(remote) {
+            sendPlayerDeath(
+              sessionIdRef.current,
+              remote.sessionId,
+              remote.username || "Another player"
+            );
+            handleDefeat(remote.username || "Another player");
           },
         });
       }
@@ -672,6 +713,17 @@ export default function AgarEducation() {
             remotePlayersRef.current.set(payload.sessionId, next);
 
             setOnlinePlayers(remotePlayersRef.current.size + 1);
+          })
+          .on("broadcast", { event: "player_dead" }, ({ payload }) => {
+            if (!payload) {
+              return;
+            }
+
+            clearRemotePlayer(payload.victimSessionId);
+
+            if (payload.victimSessionId === sessionIdRef.current) {
+              handleDefeat(payload.killerName || "Another player");
+            }
           })
           .on("broadcast", { event: "player_left" }, ({ payload }) => {
             if (!payload || payload.sessionId === sessionIdRef.current) {

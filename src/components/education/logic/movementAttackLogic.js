@@ -64,8 +64,8 @@ export function splitAndJump(blobs, mouseTarget, createBlob) {
       WORLD_HEIGHT - newRadius
     );
 
-    const anchor = createBlob(anchorX, anchorY, newRadius, dirX * 2.2, dirY * 2.2);
-    const launched = createBlob(launchedX, launchedY, newRadius, dirX * 7.5, dirY * 7.5);
+    const anchor = createBlob(anchorX, anchorY, newRadius, dirX * 3, dirY * 3);
+    const launched = createBlob(launchedX, launchedY, newRadius, dirX * 15, dirY * 15);
 
     next.push(anchor);
     next.push(launched);
@@ -156,30 +156,23 @@ export function consumeFood(blobs, food) {
 }
 
 export function resolvePvpCombat(localBlobs, remotes, handlers) {
-  const { onContact } = handlers;
+  const { onLocalEatRemote, onRemoteEatLocal } = handlers;
 
   for (const remote of remotes) {
     for (const blob of localBlobs) {
       const dx = blob.x - remote.x;
       const dy = blob.y - remote.y;
       const distance = Math.hypot(dx, dy);
-      const minDistance = blob.radius + remote.radius;
 
-      if (distance >= minDistance || distance <= 0.0001) {
-        continue;
+      if (canEatCircle(blob.radius, remote.radius, distance)) {
+        blob.radius = radiusFromArea(blobArea(blob.radius) + blobArea(remote.radius) * 0.9);
+        onLocalEatRemote(remote);
+        return;
       }
 
-      const overlap = minDistance - distance;
-      const nx = dx / distance;
-      const ny = dy / distance;
-
-      blob.x = clamp(blob.x + nx * overlap * 0.45, blob.radius, WORLD_WIDTH - blob.radius);
-      blob.y = clamp(blob.y + ny * overlap * 0.45, blob.radius, WORLD_HEIGHT - blob.radius);
-      blob.vx += nx * 0.3;
-      blob.vy += ny * 0.3;
-
-      if (typeof onContact === "function") {
-        onContact(remote);
+      if (canEatCircle(remote.radius, blob.radius, distance)) {
+        onRemoteEatLocal(remote);
+        return;
       }
     }
   }
