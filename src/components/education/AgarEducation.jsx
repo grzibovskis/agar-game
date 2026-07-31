@@ -26,7 +26,8 @@ import {
   splitAndJump,
   updateBlobMovement,
 } from "@/components/education/logic/movementAttackLogic";
-import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer, drawBotPlayer } from "@/components/education/logic/playerAppearance";
+import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer, drawBotPlayer, preloadSkin } from "@/components/education/logic/playerAppearance";
+import { SKINS, getSkinById } from "@/components/education/logic/skinData";
 import {
   createBots,
   updateBots,
@@ -44,7 +45,6 @@ import {
 } from "@/components/education/logic/spikeLogic";
 import EducationHeader from "@/components/layout/EducationHeader";
 import EducationFooter from "@/components/layout/EducationFooter";
-import Leaderboard from "@/components/education/Leaderboard";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 // Returns merge delay in ms based on number of blobs currently in play.
@@ -131,6 +131,8 @@ export default function AgarEducation() {
   const [onlinePlayers, setOnlinePlayers] = useState(1);
   const [startCountdown, setStartCountdown] = useState(0);
   const [leaderboardPlayers, setLeaderboardPlayers] = useState([]);
+  const [currentSkin, setCurrentSkin] = useState(null);
+  const currentSkinRef = useRef(null);
 
   function createBlob(x, y, radius, vx = 0, vy = 0) {
     const id = blobIdRef.current;
@@ -245,6 +247,7 @@ export default function AgarEducation() {
           parts: blobsRef.current.length,
           blobs: serializeBlobs(blobsRef.current),
           score: scoreRef.current,
+          skin: currentSkinRef.current,
           alive: true,
           updatedAt: now,
         },
@@ -336,6 +339,7 @@ export default function AgarEducation() {
 
     if (deleted) {
       setOnlinePlayers(remotePlayersRef.current.size + 1);
+      setLeaderboardPlayers((prev) => prev.filter((p) => p.sessionId !== sessionId));
     }
   }
 
@@ -349,6 +353,9 @@ export default function AgarEducation() {
     setStartCountdown(0);
     spikeLogicStartedLoggedRef.current = false;
     sendPlayerLeave("dead");
+    setLeaderboardPlayers((prev) => prev.filter((p) => !p.isLocal));
+    currentSkinRef.current = null;
+    setCurrentSkin(null);
     setDeathReason(`Session ended after collision with ${killerName}.`);
     setShowGate(true);
     resetEducation({ includeObstacles: false });
@@ -899,7 +906,7 @@ export default function AgarEducation() {
       }
 
       for (const blob of blobs) {
-        drawLocalBlob(ctx, blob, username, playerColorRef.current, now);
+        drawLocalBlob(ctx, blob, username, playerColorRef.current, now, currentSkinRef.current);
       }
 
       ctx.restore();
@@ -1001,6 +1008,7 @@ export default function AgarEducation() {
               y: payload.y,
               radius: payload.radius,
               score: typeof payload.score === "number" ? payload.score : (previous?.score ?? 0),
+              skin: payload.skin ?? previous?.skin ?? null,
               parts: payload.parts || 1,
               updatedAt: payload.updatedAt || Date.now(),
               renderX: previous?.renderX ?? payload.x,
@@ -1020,6 +1028,12 @@ export default function AgarEducation() {
             };
 
             remotePlayersRef.current.set(payload.sessionId, next);
+
+            // Preload skin image if present
+            if (payload.skin) {
+              const skinDef = getSkinById(payload.skin);
+              if (skinDef) preloadSkin(skinDef.id, skinDef.src);
+            }
 
             setOnlinePlayers(remotePlayersRef.current.size + 1);
           })
@@ -1152,11 +1166,23 @@ export default function AgarEducation() {
   return (
     <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4">
       <div className="mx-auto max-w-[1600px] space-y-3">
-        <EducationHeader score={score} size={size} parts={parts} onlinePlayers={onlinePlayers} />
+        <EducationHeader
+          score={score}
+          size={size}
+          parts={parts}
+          onlinePlayers={onlinePlayers}
+          leaderboardPlayers={leaderboardPlayers}
+          currentSkin={currentSkin}
+          onSelectSkin={(skinId) => {
+            currentSkinRef.current = skinId;
+            setCurrentSkin(skinId);
+            const def = getSkinById(skinId);
+            if (def) preloadSkin(def.id, def.src);
+          }}
+        />
         <EducationArena
           canvasRef={canvasRef}
           isActive={educationStarted}
-          leaderboard={<Leaderboard players={leaderboardPlayers} />}
         />
         <EducationFooter
           onRestart={() => resetEducation({ includeObstacles: educationStartedRef.current })}

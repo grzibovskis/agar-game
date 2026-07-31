@@ -1,6 +1,25 @@
 const PLAYER_PALETTE = ["#22c55e", "#3b82f6", "#f97316", "#f43f5e", "#14b8a6", "#eab308"];
 const VISUAL_TYPES = ["wave", "spiky", "bacteria"];
 
+// ─── Skin image cache ─────────────────────────────────────────────────────────
+const _skinCache = new Map(); // skinId → HTMLImageElement (loaded) | "loading" | "error"
+
+export function preloadSkin(skinId, src) {
+  if (!skinId || !src) return;
+  if (_skinCache.has(skinId)) return;
+  if (typeof window === "undefined") return;
+  _skinCache.set(skinId, "loading");
+  const img = new window.Image();
+  img.onload  = () => _skinCache.set(skinId, img);
+  img.onerror = () => _skinCache.set(skinId, "error");
+  img.src = src;
+}
+
+function getSkinImg(skinId) {
+  const v = _skinCache.get(skinId);
+  return v instanceof window.Image ? v : null;
+}
+
 // Deterministic pseudo-random from a numeric seed
 function seededRandom(n) {
   const x = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
@@ -70,6 +89,8 @@ export function drawCircle(ctx, x, y, radius, color, strokeColor) {
 }
 
 export function drawRemotePlayer(ctx, remote) {
+  const skinImg = remote.skin ? getSkinImg(remote.skin) : null;
+
   if (remote.blobs?.length) {
     let labelBlob = remote.blobs[0];
 
@@ -78,7 +99,22 @@ export function drawRemotePlayer(ctx, remote) {
       const blobY = blob.renderY ?? blob.y;
       const blobRadius = blob.renderRadius ?? blob.radius;
 
-      drawCircle(ctx, blobX, blobY, blobRadius, remote.color || "#3b82f6", "#dbeafe");
+      if (skinImg) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(blobX, blobY, blobRadius, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.drawImage(skinImg, blobX - blobRadius, blobY - blobRadius, blobRadius * 2, blobRadius * 2);
+        ctx.restore();
+        // border
+        ctx.beginPath();
+        ctx.arc(blobX, blobY, blobRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = "#dbeafe";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      } else {
+        drawCircle(ctx, blobX, blobY, blobRadius, remote.color || "#3b82f6", "#dbeafe");
+      }
 
       const labelRadius = labelBlob.renderRadius ?? labelBlob.radius;
       if (blobRadius > labelRadius) {
@@ -101,7 +137,21 @@ export function drawRemotePlayer(ctx, remote) {
   const y = remote.renderY ?? remote.y;
   const radius = remote.renderRadius ?? remote.radius;
 
-  drawCircle(ctx, x, y, radius, remote.color || "#3b82f6", "#dbeafe");
+  if (skinImg) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(skinImg, x - radius, y - radius, radius * 2, radius * 2);
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = "#dbeafe";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  } else {
+    drawCircle(ctx, x, y, radius, remote.color || "#3b82f6", "#dbeafe");
+  }
   ctx.fillStyle = "white";
   ctx.font = "bold 13px Arial";
   ctx.textAlign = "center";
@@ -109,7 +159,8 @@ export function drawRemotePlayer(ctx, remote) {
 }
 
 // now = Date.now() value passed in from the game loop for animation
-export function drawLocalBlob(ctx, blob, username, color, now = 0) {
+// skinId = optional skin id string selected by the player
+export function drawLocalBlob(ctx, blob, username, color, now = 0, skinId = null) {
   let displayRadius = blob.radius;
 
   if (blob.mergeAnimStart) {
@@ -126,13 +177,25 @@ export function drawLocalBlob(ctx, blob, username, color, now = 0) {
     }
   }
 
-  // Fill
-  ctx.beginPath();
-  ctx.arc(blob.x, blob.y, displayRadius, 0, Math.PI * 2);
-  ctx.fillStyle = color;
-  ctx.fill();
+  const skinImg = skinId ? getSkinImg(skinId) : null;
 
-  // Crisp border
+  if (skinImg) {
+    // Draw image clipped to circle
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(blob.x, blob.y, displayRadius, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(skinImg, blob.x - displayRadius, blob.y - displayRadius, displayRadius * 2, displayRadius * 2);
+    ctx.restore();
+  } else {
+    // Plain fill
+    ctx.beginPath();
+    ctx.arc(blob.x, blob.y, displayRadius, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  // Border
   ctx.beginPath();
   ctx.arc(blob.x, blob.y, displayRadius, 0, Math.PI * 2);
   ctx.strokeStyle = "rgba(255,255,255,0.55)";
