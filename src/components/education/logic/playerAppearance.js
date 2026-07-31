@@ -68,7 +68,23 @@ export function drawRemotePlayer(ctx, remote) {
 }
 
 export function drawLocalBlob(ctx, blob, username, color) {
-  drawCircle(ctx, blob.x, blob.y, blob.radius, color, "#bbf7d0");
+  let displayRadius = blob.radius;
+
+  if (blob.mergeAnimStart) {
+    const elapsed = Date.now() - blob.mergeAnimStart;
+    const duration = blob.mergeAnimDuration || 450;
+    const t = Math.min(elapsed / duration, 1);
+    const eased = 1 - (1 - t) * (1 - t); // ease-out quad
+    displayRadius = blob.mergeAnimFromRadius + (blob.radius - blob.mergeAnimFromRadius) * eased;
+
+    if (t >= 1) {
+      delete blob.mergeAnimStart;
+      delete blob.mergeAnimFromRadius;
+      delete blob.mergeAnimDuration;
+    }
+  }
+
+  drawCircle(ctx, blob.x, blob.y, displayRadius, color, "#bbf7d0");
   ctx.fillStyle = "white";
   ctx.font = "bold 14px Arial";
   ctx.textAlign = "center";

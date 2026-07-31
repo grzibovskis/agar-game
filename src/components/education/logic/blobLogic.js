@@ -1,5 +1,7 @@
 import { blobArea, radiusFromArea } from "./math";
 
+const MERGE_ANIM_DURATION_MS = 450;
+
 export function createBlobFactory(blobIdRef) {
   return function createBlob(x, y, radius, vx = 0, vy = 0) {
     const id = blobIdRef.current;
@@ -97,8 +99,13 @@ export function mergeClosestPairsOnce(blobs, createBlob) {
 
     const x = (a.x * areaA + b.x * areaB) / totalArea;
     const y = (a.y * areaA + b.y * areaB) / totalArea;
+    const mergedRadius = radiusFromArea(totalArea);
 
-    merged.push(createBlob(x, y, radiusFromArea(totalArea)));
+    const newBlob = createBlob(x, y, mergedRadius);
+    newBlob.mergeAnimStart = Date.now();
+    newBlob.mergeAnimFromRadius = Math.min(a.radius, b.radius);
+    newBlob.mergeAnimDuration = MERGE_ANIM_DURATION_MS;
+    merged.push(newBlob);
   }
 
   return merged;
