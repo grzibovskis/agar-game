@@ -237,27 +237,31 @@ export function updateBots({ bots, now, food, maxActive, localBlobs, remotePlaye
 
 // ─── Bot eats local player ────────────────────────────────────────────────────
 export function resolveBotVsLocal(bots, localBlobs) {
-  if (!localBlobs.length) return { updatedBots: bots, nextLocalBlobs: localBlobs, botAteLocal: false };
+  if (!localBlobs.length) return { updatedBots: bots, nextLocalBlobs: localBlobs, botAteLocal: false, eatenLocalBlobs: [] };
 
   let localArr = [...localBlobs];
   let botAteLocal = false;
+  const eatenLocalBlobs = [];
   const updatedBots = bots.map(bot => {
     if (!bot.active) return bot;
     const newBlobs = bot.blobs.map(bb => ({ ...bb }));
+    let scoreGain = 0;
     for (const bb of newBlobs) {
       for (let li = localArr.length - 1; li >= 0; li--) {
         const lb = localArr[li];
         const dist = d2(bb.x, bb.y, lb.x, lb.y);
         if (canEatCircle(bb.radius, lb.radius, dist)) {
           bb.radius = radiusFromArea(blobArea(bb.radius) + blobArea(lb.radius) * 0.9);
+          scoreGain += Math.max(6, Math.round(lb.radius * 0.9));
+          eatenLocalBlobs.push(lb);
           localArr.splice(li, 1);
           botAteLocal = true;
           break;
         }
       }
     }
-    return { ...bot, blobs: newBlobs };
+    return { ...bot, blobs: newBlobs, score: (bot.score || 0) + scoreGain };
   });
 
-  return { updatedBots, nextLocalBlobs: localArr, botAteLocal };
+  return { updatedBots, nextLocalBlobs: localArr, botAteLocal, eatenLocalBlobs };
 }

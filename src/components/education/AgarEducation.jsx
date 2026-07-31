@@ -395,6 +395,13 @@ export default function AgarEducation() {
     const next = current.filter((_, index) => index !== removeIndex);
     blobsRef.current = next;
 
+    // Deduct score proportional to the lost blob's size.
+    const lostBlob = current[removeIndex];
+    if (lostBlob) {
+      const penalty = Math.max(3, Math.round(lostBlob.radius * 0.6));
+      setScoreValue(Math.max(0, scoreRef.current - penalty));
+    }
+
     if (!next.length) {
       return;
     }
@@ -830,11 +837,16 @@ export default function AgarEducation() {
           foodRef.current = foodRef.current.filter((_, i) => !botResult.consumedFoodIndices.has(i));
 
           // Bot eats local blobs
-          const { updatedBots, nextLocalBlobs, botAteLocal } = resolveBotVsLocal(botsRef.current, blobs);
+          const { updatedBots, nextLocalBlobs, botAteLocal, eatenLocalBlobs } = resolveBotVsLocal(botsRef.current, blobs);
           if (botAteLocal) {
             botsRef.current = updatedBots;
             blobs = nextLocalBlobs;
             blobsRef.current = nextLocalBlobs;
+            // Deduct score for each blob eaten by a bot
+            const penalty = eatenLocalBlobs.reduce(
+              (sum, b) => sum + Math.max(3, Math.round(b.radius * 0.6)), 0
+            );
+            setScoreValue(Math.max(0, scoreRef.current - penalty));
             updateHudFromBlobs(nextLocalBlobs);
             sendPlayerState(true);
             if (!nextLocalBlobs.length) {
