@@ -465,6 +465,33 @@ export default function AgarEducation() {
     return eatenBlob;
   }
 
+  // Returns a spawn position that is clear of spikes, warning zones, other players and bots.
+  function findSafeSpawnPos() {
+    const SPAWN_R    = 22;   // starting radius
+    const PADDING    = 180;  // distance from world edge
+    const MAX_TRIES  = 120;
+
+    const obstacles = [
+      ...spikesRef.current.map((s) => ({ x: s.x, y: s.y, r: s.radius + SPAWN_R + 80 })),
+      ...warningZonesRef.current.map((w) => ({ x: w.x, y: w.y, r: w.radius + SPAWN_R + 50 })),
+      ...[...remotePlayersRef.current.values()].map((p) => ({ x: p.x, y: p.y, r: p.radius + SPAWN_R + 70 })),
+      ...botsRef.current
+        .filter((b) => b.active && b.blobs.length > 0)
+        .flatMap((b) => b.blobs.map((bl) => ({ x: bl.x, y: bl.y, r: bl.radius + SPAWN_R + 70 }))),
+    ];
+
+    for (let i = 0; i < MAX_TRIES; i += 1) {
+      const x = PADDING + Math.random() * (WORLD_WIDTH  - PADDING * 2);
+      const y = PADDING + Math.random() * (WORLD_HEIGHT - PADDING * 2);
+      if (obstacles.every((o) => Math.hypot(x - o.x, y - o.y) >= o.r)) {
+        return { x, y };
+      }
+    }
+
+    // Fallback: centre of world (shouldn't normally be reached)
+    return { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+  }
+
   function resetEducation({ includeObstacles = true } = {}) {
     const canvas = canvasRef.current;
 
@@ -472,8 +499,6 @@ export default function AgarEducation() {
       return;
     }
 
-    const centerX = WORLD_WIDTH / 2;
-    const centerY = WORLD_HEIGHT / 2;
     if (includeObstacles) {
       const now = Date.now();
       spikeEpochRef.current = now;
@@ -485,6 +510,9 @@ export default function AgarEducation() {
       warningZonesRef.current = [];
       botsRef.current = [];
     }
+
+    // Pick a safe spawn that avoids spikes and other players.
+    const { x: centerX, y: centerY } = findSafeSpawnPos();
 
     blobsRef.current = [createBlob(centerX, centerY, 22)];
     foodRef.current = includeObstacles
@@ -715,6 +743,7 @@ export default function AgarEducation() {
         return;
       }
 
+      try {
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
 
@@ -810,6 +839,8 @@ export default function AgarEducation() {
             sendPlayerState(true);
             if (!nextLocalBlobs.length) {
               handleDefeat("a bot");
+              // RAF is always rescheduled after the try block; return safely here.
+              animationRef.current = requestAnimationFrame(educationLoop);
               return;
             }
           }
@@ -956,6 +987,11 @@ export default function AgarEducation() {
             }]
           : [];
         setLeaderboardPlayers([...local, ...remote, ...botPlayers]);
+      }
+
+      } catch (err) {
+        // Never let a single bad frame kill the animation loop.
+        console.error("[educationLoop] uncaught frame error — loop continues", err);
       }
 
       animationRef.current = requestAnimationFrame(educationLoop);
@@ -1107,6 +1143,19 @@ export default function AgarEducation() {
               username: playerNameRef.current || "Guest",
               joinedAt: Date.now(),
             });
+          } else if (
+            status === "CHANNEL_ERROR" ||
+            status === "TIMED_OUT" ||
+            status === "CLOSED"
+          ) {
+            // Auto-reconnect after a short back-off so broadcasts resume.
+            setTimeout(() => {
+              if (isDisposed) return;
+              console.info("[AgarEducation] Channel dropped (", status, "), reconnecting…");
+              try { channelRef.current?.unsubscribe(); } catch (_) {}
+              channelRef.current = null;
+              setupRealtime();
+            }, 3_000);
           }
         });
 
