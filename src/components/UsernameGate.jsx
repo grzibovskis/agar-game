@@ -98,7 +98,7 @@ export default function UsernameGate({
             className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={isDisabled}
           >
-            {isSubmitting ? "Starting..." : "Start Session"}
+            {isSubmitting ? "Starting..." : "Let's eat!"}
           </button>
         </form>
       </div>

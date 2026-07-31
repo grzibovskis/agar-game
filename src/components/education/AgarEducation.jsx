@@ -6,7 +6,6 @@ import EducationArena from "@/components/education/EducationArena";
 import {
   FOOD_TARGET,
   GRID_SIZE,
-  MERGE_INTERVAL_MS,
   REMOTE_STALE_MS,
   SPIKE_MAX_COUNT,
   STATE_BROADCAST_MS,
@@ -40,7 +39,17 @@ import {
 } from "@/components/education/logic/spikeLogic";
 import EducationHeader from "@/components/layout/EducationHeader";
 import EducationFooter from "@/components/layout/EducationFooter";
+import Leaderboard from "@/components/education/Leaderboard";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+
+// Returns merge delay in ms based on number of blobs currently in play.
+// 2 blobs (1 split) → 60s, 3 blobs → 45s, 4 blobs → 30s, 5+ blobs → 20s.
+function getMergeDelayMs(blobCount) {
+  if (blobCount >= 5) return 20_000;
+  if (blobCount === 4) return 30_000;
+  if (blobCount === 3) return 45_000;
+  return 60_000;
+}
 
 function createSessionId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -92,14 +101,18 @@ export default function AgarEducation() {
   const lastBroadcastRef = useRef(0);
   const leaveSentRef = useRef(false);
   const startCountdownTimerRef = useRef(null);
+  const lastLeaderboardUpdateRef = useRef(0);
 
   const mouseTargetRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
   const cameraRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
+  const zoomRef = useRef(1);
   const blobsRef = useRef([]);
   const mergeStateRef = useRef({ nextMergeAt: null });
   const foodRef = useRef([]);
   const spikesRef = useRef([]);
   const warningZonesRef = useRef([]);
+  const spikeEpochRef = useRef(0);
+  const lastSpikeBroadcastRef = useRef(0);
 
   const [score, setScore] = useState(0);
   const [size, setSize] = useState(22);
@@ -111,6 +124,7 @@ export default function AgarEducation() {
   const [connectionStatus, setConnectionStatus] = useState("connecting");
   const [onlinePlayers, setOnlinePlayers] = useState(1);
   const [startCountdown, setStartCountdown] = useState(0);
+  const [leaderboardPlayers, setLeaderboardPlayers] = useState([]);
 
   function createBlob(x, y, radius, vx = 0, vy = 0) {
     const id = blobIdRef.current;
@@ -162,6 +176,38 @@ export default function AgarEducation() {
     };
   }
 
+  function sendSpikeState(force = false) {
+    const channel = channelRef.current;
+
+    if (!channel || !isAliveRef.current) {
+      return;
+    }
+
+    const now = Date.now();
+
+    if (!force && now - lastSpikeBroadcastRef.current < 2_000) {
+      return;
+    }
+
+    lastSpikeBroadcastRef.current = now;
+
+    try {
+      channel.send({
+        type: "broadcast",
+        event: "spike_state",
+        payload: {
+          sessionId: sessionIdRef.current,
+          spikes: spikesRef.current,
+          warnings: warningZonesRef.current,
+          generatedAt: spikeEpochRef.current,
+          sentAt: now,
+        },
+      });
+    } catch (error) {
+      console.error("[AgarEducation] failed to send spike_state", error);
+    }
+  }
+
   function sendPlayerState(force = false) {
     const channel = channelRef.current;
 
@@ -192,6 +238,7 @@ export default function AgarEducation() {
           radius: local.radius,
           parts: blobsRef.current.length,
           blobs: serializeBlobs(blobsRef.current),
+          score: scoreRef.current,
           alive: true,
           updatedAt: now,
         },
@@ -342,7 +389,7 @@ export default function AgarEducation() {
     updateHudFromBlobs(next);
 
     if (next.length > 1 && !mergeStateRef.current.nextMergeAt) {
-      mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
+      mergeStateRef.current.nextMergeAt = Date.now() + getMergeDelayMs(next.length);
     }
 
     sendPlayerState(true);
@@ -416,6 +463,7 @@ export default function AgarEducation() {
     const centerY = WORLD_HEIGHT / 2;
     if (includeObstacles) {
       const now = Date.now();
+      spikeEpochRef.current = now;
       spikesRef.current = createInitialSpikes(SPIKE_MAX_COUNT, now, WORLD_WIDTH, WORLD_HEIGHT);
       warningZonesRef.current = [];
     } else {
@@ -443,6 +491,7 @@ export default function AgarEducation() {
       x: cameraX,
       y: cameraY,
     };
+    zoomRef.current = 1;
 
     mouseTargetRef.current = {
       x: centerX,
@@ -470,6 +519,7 @@ export default function AgarEducation() {
     setEducationStartedValue(true);
     setShowGate(false);
     console.info("[AgarEducation] Education started", { safeName });
+    sendSpikeState(true);
 
     const channel = channelRef.current;
     if (channel && typeof channel.track === "function") {
@@ -563,8 +613,9 @@ export default function AgarEducation() {
       const viewY = event.clientY - rect.top;
       const camera = cameraRef.current;
 
-      target.x = clamp(camera.x - canvas.clientWidth / 2 + viewX, 0, WORLD_WIDTH);
-      target.y = clamp(camera.y - canvas.clientHeight / 2 + viewY, 0, WORLD_HEIGHT);
+      const zoom = zoomRef.current;
+      target.x = clamp(camera.x + (viewX - canvas.clientWidth / 2) / zoom, 0, WORLD_WIDTH);
+      target.y = clamp(camera.y + (viewY - canvas.clientHeight / 2) / zoom, 0, WORLD_HEIGHT);
     }
 
     function handleKeyDown(event) {
@@ -586,7 +637,7 @@ export default function AgarEducation() {
       updateHudFromBlobs(splitBlobs);
 
       if (didSplit) {
-        mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
+        mergeStateRef.current.nextMergeAt = Date.now() + getMergeDelayMs(splitBlobs.length);
         sendPlayerState(true);
       }
     }
@@ -665,6 +716,7 @@ export default function AgarEducation() {
           console.info("[AgarEducation] Spike logic started");
         }
 
+        const prevSpikeHash = spikesRef.current.map((s) => `${s.id}:${Math.round(s.x)},${Math.round(s.y)}`).join("|") + "/" + warningZonesRef.current.length;
         const spikeState = updateSpikesAndWarnings({
           spikes: spikesRef.current,
           warnings: warningZonesRef.current,
@@ -675,6 +727,11 @@ export default function AgarEducation() {
 
         spikesRef.current = spikeState.spikes;
         warningZonesRef.current = spikeState.warnings;
+
+        const nextSpikeHash = spikeState.spikes.map((s) => `${s.id}:${Math.round(s.x)},${Math.round(s.y)}`).join("|") + "/" + spikeState.warnings.length;
+        if (prevSpikeHash !== nextSpikeHash) {
+          sendSpikeState();
+        }
       }
 
       if (isAliveRef.current && educationStartedRef.current) {
@@ -693,7 +750,7 @@ export default function AgarEducation() {
           blobs = splitToMax;
 
           if (didSplit) {
-            mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
+            mergeStateRef.current.nextMergeAt = Date.now() + getMergeDelayMs(splitToMax.length);
             updateHudFromBlobs(splitToMax);
             sendPlayerState(true);
           }
@@ -735,23 +792,25 @@ export default function AgarEducation() {
 
       const centroid = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
 
-      cameraRef.current.x = clamp(
-        centroid.x,
-        width / 2,
-        Math.max(width / 2, WORLD_WIDTH - width / 2)
-      );
-      cameraRef.current.y = clamp(
-        centroid.y,
-        height / 2,
-        Math.max(height / 2, WORLD_HEIGHT - height / 2)
-      );
+      // Dynamic zoom: larger player sees more of the arena.
+      const combinedRadius = blobs.length ? getCombinedRadius(blobs) : 22;
+      const targetZoom = clamp(Math.pow(60 / Math.max(combinedRadius, 1), 0.5), 0.25, 1.0);
+      zoomRef.current += (targetZoom - zoomRef.current) * 0.05;
+      const zoom = zoomRef.current;
+
+      const halfViewW = width / (2 * zoom);
+      const halfViewH = height / (2 * zoom);
+      cameraRef.current.x = clamp(centroid.x, halfViewW, Math.max(halfViewW, WORLD_WIDTH - halfViewW));
+      cameraRef.current.y = clamp(centroid.y, halfViewH, Math.max(halfViewH, WORLD_HEIGHT - halfViewH));
 
       const camera = cameraRef.current;
 
       ctx.save();
-      ctx.translate(width / 2 - camera.x, height / 2 - camera.y);
+      ctx.translate(width / 2, height / 2);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-camera.x, -camera.y);
 
-      drawGrid(ctx, camera, width, height, GRID_SIZE);
+      drawGrid(ctx, camera, width / zoom, height / zoom, GRID_SIZE);
 
       ctx.strokeStyle = "rgba(148, 163, 184, 0.55)";
       ctx.lineWidth = 5;
@@ -781,7 +840,7 @@ export default function AgarEducation() {
         blobsRef.current = merged;
 
         if (blobsRef.current.length > 1) {
-          mergeStateRef.current.nextMergeAt = Date.now() + MERGE_INTERVAL_MS;
+          mergeStateRef.current.nextMergeAt = Date.now() + getMergeDelayMs(blobsRef.current.length);
         } else {
           mergeStateRef.current.nextMergeAt = null;
         }
@@ -791,6 +850,29 @@ export default function AgarEducation() {
       }
 
       sendPlayerState();
+
+      // Throttled leaderboard refresh (~2× per second).
+      if (now - lastLeaderboardUpdateRef.current >= 500) {
+        lastLeaderboardUpdateRef.current = now;
+        const remote = [...remotePlayersRef.current.values()].map((p) => ({
+          sessionId: p.sessionId,
+          username: p.username,
+          score: p.score ?? 0,
+          color: p.color,
+          isLocal: false,
+        }));
+        const local = isAliveRef.current
+          ? [{
+              sessionId: sessionIdRef.current,
+              username: playerNameRef.current || "You",
+              score: scoreRef.current,
+              color: playerColorRef.current,
+              isLocal: true,
+            }]
+          : [];
+        setLeaderboardPlayers([...local, ...remote]);
+      }
+
       animationRef.current = requestAnimationFrame(educationLoop);
     }
 
@@ -840,6 +922,7 @@ export default function AgarEducation() {
               x: payload.x,
               y: payload.y,
               radius: payload.radius,
+              score: typeof payload.score === "number" ? payload.score : (previous?.score ?? 0),
               parts: payload.parts || 1,
               updatedAt: payload.updatedAt || Date.now(),
               renderX: previous?.renderX ?? payload.x,
@@ -896,6 +979,22 @@ export default function AgarEducation() {
             }
 
             clearRemotePlayer(payload.sessionId);
+          })
+          .on("broadcast", { event: "spike_state" }, ({ payload }) => {
+            if (!payload || payload.sessionId === sessionIdRef.current) {
+              return;
+            }
+
+            // Adopt spike positions from the player who has been in the game longest
+            // (earliest generatedAt means they spawned first and are the authority)
+            if (
+              !spikesRef.current.length ||
+              (Array.isArray(payload.spikes) && payload.spikes.length > 0 && payload.generatedAt < spikeEpochRef.current)
+            ) {
+              spikeEpochRef.current = payload.generatedAt;
+              spikesRef.current = payload.spikes || [];
+              warningZonesRef.current = payload.warnings || [];
+            }
           })
           .on("presence", { event: "sync" }, () => {
             const state = channel.presenceState();
@@ -976,7 +1075,11 @@ export default function AgarEducation() {
     <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4">
       <div className="mx-auto max-w-[1600px] space-y-3">
         <EducationHeader score={score} size={size} parts={parts} onlinePlayers={onlinePlayers} />
-        <EducationArena canvasRef={canvasRef} isActive={educationStarted} />
+        <EducationArena
+          canvasRef={canvasRef}
+          isActive={educationStarted}
+          leaderboard={<Leaderboard players={leaderboardPlayers} />}
+        />
         <EducationFooter
           onRestart={() => resetEducation({ includeObstacles: educationStartedRef.current })}
           username={username}
