@@ -5,7 +5,7 @@ export default function EducationFooter({ onRestart, username, connectionStatus 
         onClick={onRestart}
         className="rounded-xl bg-green-500 px-5 py-3 font-semibold text-slate-950 hover:bg-green-400"
       >
-        Restart Education
+        Restart
       </button>
 
       <p className="text-sm text-slate-300">Player: {username || "Not joined"} | Supabase: {connectionStatus}</p>

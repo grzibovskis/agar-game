@@ -26,7 +26,12 @@ import {
   splitAndJump,
   updateBlobMovement,
 } from "@/components/education/logic/movementAttackLogic";
-import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer } from "@/components/education/logic/playerAppearance";
+import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer, drawBotPlayer } from "@/components/education/logic/playerAppearance";
+import {
+  createBots,
+  updateBots,
+  resolveBotVsLocal,
+} from "@/components/education/logic/botLogic";
 import {
   createInitialSpikes,
   drawSpikeBalls,
@@ -111,6 +116,7 @@ export default function AgarEducation() {
   const foodRef = useRef([]);
   const spikesRef = useRef([]);
   const warningZonesRef = useRef([]);
+  const botsRef = useRef([]);
   const spikeEpochRef = useRef(0);
   const lastSpikeBroadcastRef = useRef(0);
 
@@ -466,9 +472,11 @@ export default function AgarEducation() {
       spikeEpochRef.current = now;
       spikesRef.current = createInitialSpikes(SPIKE_MAX_COUNT, now, WORLD_WIDTH, WORLD_HEIGHT);
       warningZonesRef.current = [];
+      botsRef.current = createBots(now);
     } else {
       spikesRef.current = [];
       warningZonesRef.current = [];
+      botsRef.current = [];
     }
 
     blobsRef.current = [createBlob(centerX, centerY, 22)];
@@ -769,8 +777,65 @@ export default function AgarEducation() {
           updateHudFromBlobs(blobs);
         }
 
-        resolvePvpCombat(blobs, [...remotePlayersRef.current.values()], {
+        // ── Bot AI update ────────────────────────────────────────────
+        {
+          const totalHumans = 1 + remotePlayersRef.current.size;
+          const maxActive   = Math.max(0, 10 - totalHumans);
+          const botResult   = updateBots({
+            bots: botsRef.current,
+            now,
+            food: foodRef.current,
+            maxActive,
+            localBlobs: blobs,
+            remotePlayers: remotePlayersRef.current,
+          });
+          botsRef.current = botResult.bots;
+          // Remove food consumed by bots
+          foodRef.current = foodRef.current.filter((_, i) => !botResult.consumedFoodIndices.has(i));
+
+          // Bot eats local blobs
+          const { updatedBots, nextLocalBlobs, botAteLocal } = resolveBotVsLocal(botsRef.current, blobs);
+          if (botAteLocal) {
+            botsRef.current = updatedBots;
+            blobs = nextLocalBlobs;
+            blobsRef.current = nextLocalBlobs;
+            updateHudFromBlobs(nextLocalBlobs);
+            sendPlayerState(true);
+            if (!nextLocalBlobs.length) {
+              handleDefeat("a bot");
+              return;
+            }
+          }
+        }
+
+        // ── PvP: local eats remote players and bot blobs ─────────────
+        const botRemotes = botsRef.current
+          .filter(b => b.active && b.blobs.length > 0)
+          .map(b => ({
+            sessionId: b.id,
+            id: b.id,
+            username: b.name,
+            color: b.color,
+            x: b.blobs[0].x,
+            y: b.blobs[0].y,
+            radius: b.blobs[0].radius,
+            blobs: b.blobs,
+            isBot: true,
+          }));
+
+        resolvePvpCombat(blobs, [...remotePlayersRef.current.values(), ...botRemotes], {
           onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
+            if (remote.isBot) {
+              botsRef.current = botsRef.current.map(bot =>
+                bot.id === remote.id
+                  ? { ...bot, blobs: bot.blobs.filter((_, i) => i !== remoteBlobIndex) }
+                  : bot
+              );
+              setScoreValue(scoreRef.current + Math.max(6, Math.round((remoteBlob?.radius || 0) * 0.9)));
+              updateHudFromBlobs(blobs);
+              sendPlayerState(true);
+              return;
+            }
             const eatenBlob =
               applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex, remoteBlob) || remoteBlob;
             setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
@@ -829,8 +894,12 @@ export default function AgarEducation() {
         drawRemotePlayer(ctx, remote);
       }
 
+      for (const bot of botsRef.current) {
+        if (bot.active && bot.blobs.length) drawBotPlayer(ctx, bot, now);
+      }
+
       for (const blob of blobs) {
-        drawLocalBlob(ctx, blob, username, playerColorRef.current);
+        drawLocalBlob(ctx, blob, username, playerColorRef.current, now);
       }
 
       ctx.restore();
@@ -861,6 +930,15 @@ export default function AgarEducation() {
           color: p.color,
           isLocal: false,
         }));
+        const botPlayers = botsRef.current
+          .filter(b => b.active && b.blobs.length > 0)
+          .map(b => ({
+            sessionId: b.id,
+            username: b.name,
+            score: b.score,
+            color: b.color,
+            isLocal: false,
+          }));
         const local = isAliveRef.current
           ? [{
               sessionId: sessionIdRef.current,
@@ -870,7 +948,7 @@ export default function AgarEducation() {
               isLocal: true,
             }]
           : [];
-        setLeaderboardPlayers([...local, ...remote]);
+        setLeaderboardPlayers([...local, ...remote, ...botPlayers]);
       }
 
       animationRef.current = requestAnimationFrame(educationLoop);
