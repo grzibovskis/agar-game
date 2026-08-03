@@ -1,5 +1,5 @@
-import { WORLD_WIDTH, WORLD_HEIGHT } from "./constants";
-import { blobArea, radiusFromArea } from "./math";
+import { WORLD_WIDTH, WORLD_HEIGHT } from "@/components/cell/logic/constants";
+import { blobArea, radiusFromArea } from "@/components/cell/logic/math";
 import { canEatCircle } from "./movementAttackLogic";
 
 // ─── Constants ────────────────────────────────────────────────────────────────

@@ -5,8 +5,8 @@ import {
   PVP_SIZE_ADVANTAGE,
   WORLD_HEIGHT,
   WORLD_WIDTH,
-} from "./constants";
-import { blobArea, clamp, radiusFromArea } from "./math";
+} from "@/components/cell/logic/constants";
+import { blobArea, clamp, radiusFromArea } from "@/components/cell/logic/math";
 
 export function canEatCircle(biggerRadius, smallerRadius, distance) {
   if (biggerRadius <= smallerRadius * PVP_SIZE_ADVANTAGE) {

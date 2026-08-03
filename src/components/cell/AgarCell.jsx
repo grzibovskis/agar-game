@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import UsernameGate from "@/components/UsernameGate";
-import EducationArena from "@/components/education/EducationArena";
+import CellArena from "@/components/arenas/lvl1/CellArena";
 import {
   FOOD_TARGET,
   GRID_SIZE,
@@ -11,28 +10,28 @@ import {
   STATE_BROADCAST_MS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
-} from "@/components/education/logic/constants";
-import { clamp } from "@/components/education/logic/math";
+} from "@/components/cell/logic/constants";
+import { clamp } from "@/components/cell/logic/math";
 import {
   getBlobCentroid,
   getCombinedRadius,
   mergeClosestPairsOnce,
-} from "@/components/education/logic/blobLogic";
-import { createFood, drawGrid, replenishFood } from "@/components/education/logic/arenaLogic";
+} from "@/components/cell/logic/blobLogic";
+import { createFood, drawGrid, replenishFood } from "@/components/arenas/lvl1/arenaLogic";
 import {
   consumeFood,
   resolvePvpCombat,
   separateOverlappingBlobs,
   splitAndJump,
   updateBlobMovement,
-} from "@/components/education/logic/movementAttackLogic";
-import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer, drawBotPlayer, preloadSkin } from "@/components/education/logic/playerAppearance";
-import { SKINS, getSkinById } from "@/components/education/logic/skinData";
+} from "@/components/arenas/lvl1/movementAttackLogic";
+import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer, drawBotPlayer, preloadSkin } from "@/components/cell/logic/playerAppearance";
+import { SKINS, getSkinById } from "@/components/cell/logic/skinData";
 import {
   createBots,
   updateBots,
   resolveBotVsLocal,
-} from "@/components/education/logic/botLogic";
+} from "@/components/arenas/lvl1/botLogic";
 import {
   createInitialSpikes,
   drawSpikeBalls,
@@ -42,9 +41,8 @@ import {
   keepBlobsOutsideWarnings,
   splitToMaxCells,
   updateSpikesAndWarnings,
-} from "@/components/education/logic/spikeLogic";
-import EducationHeader from "@/components/layout/EducationHeader";
-import EducationFooter from "@/components/layout/EducationFooter";
+} from "@/components/arenas/lvl1/spikeLogic";
+import CellHeader from "@/components/layout/CellHeader";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 // Returns merge delay in ms based on number of blobs currently in play.
@@ -89,7 +87,7 @@ function summarizeBlobs(blobs, fallbackX = WORLD_WIDTH / 2, fallbackY = WORLD_HE
   };
 }
 
-export default function AgarEducation() {
+export default function AgarCell() {
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
   const rafReadyRef = useRef(false);
@@ -99,7 +97,7 @@ export default function AgarEducation() {
   const remotePlayersRef = useRef(new Map());
   const scoreRef = useRef(0);
   const isAliveRef = useRef(false);
-  const educationStartedRef = useRef(false);
+  const cellStartedRef = useRef(false);
   const spikeLogicStartedLoggedRef = useRef(false);
   const playerNameRef = useRef("");
   const playerColorRef = useRef("#22c55e");
@@ -124,7 +122,9 @@ export default function AgarEducation() {
   const [size, setSize] = useState(22);
   const [parts, setParts] = useState(1);
   const [showGate, setShowGate] = useState(true);
-  const [educationStarted, setEducationStarted] = useState(false);
+  const [guestMode, setGuestMode] = useState(false);
+  const [guestName, setGuestName] = useState("");
+  const [cellStarted, setCellStarted] = useState(false);
   const [deathReason, setDeathReason] = useState("");
   const [username, setUsername] = useState("");
   const [connectionStatus, setConnectionStatus] = useState("connecting");
@@ -133,6 +133,7 @@ export default function AgarEducation() {
   const [leaderboardPlayers, setLeaderboardPlayers] = useState([]);
   const [currentSkin, setCurrentSkin] = useState(null);
   const currentSkinRef = useRef(null);
+  const [playerColor, setPlayerColor] = useState("#22c55e");
 
   function createBlob(x, y, radius, vx = 0, vy = 0) {
     const id = blobIdRef.current;
@@ -148,14 +149,14 @@ export default function AgarEducation() {
     };
   }
 
-  function setEducationStartedValue(next) {
-    educationStartedRef.current = next;
-    setEducationStarted(next);
+  function setCellStartedValue(next) {
+    cellStartedRef.current = next;
+    setCellStarted(next);
   }
 
   useEffect(() => {
-    console.info("[AgarEducation] educationStarted state changed", { educationStarted });
-  }, [educationStarted]);
+    console.info("[AgarCell] educationStarted state changed", { cellStarted });
+  }, [cellStarted]);
 
   function updateHudFromBlobs(blobs) {
     setParts(blobs.length);
@@ -212,7 +213,7 @@ export default function AgarEducation() {
         },
       });
     } catch (error) {
-      console.error("[AgarEducation] failed to send spike_state", error);
+      console.error("[AgarCell] failed to send spike_state", error);
     }
   }
 
@@ -253,7 +254,7 @@ export default function AgarEducation() {
         },
       });
     } catch (error) {
-      console.error("[AgarEducation] failed to send player_state", error);
+      console.error("[AgarCell] failed to send player_state", error);
     }
   }
 
@@ -279,7 +280,7 @@ export default function AgarEducation() {
 
       channel.untrack();
     } catch (error) {
-      console.error("[AgarEducation] failed to send player_left", error);
+      console.error("[AgarCell] failed to send player_left", error);
     }
   }
 
@@ -302,7 +303,7 @@ export default function AgarEducation() {
         },
       });
     } catch (error) {
-      console.error("[AgarEducation] failed to send player_dead", error);
+      console.error("[AgarCell] failed to send player_dead", error);
     }
   }
 
@@ -330,7 +331,7 @@ export default function AgarEducation() {
         },
       });
     } catch (error) {
-      console.error("[AgarEducation] failed to send player_blob_eaten", error);
+      console.error("[AgarCell] failed to send player_blob_eaten", error);
     }
   }
 
@@ -349,7 +350,7 @@ export default function AgarEducation() {
     }
 
     isAliveRef.current = false;
-    setEducationStartedValue(false);
+    setCellStartedValue(false);
     setStartCountdown(0);
     spikeLogicStartedLoggedRef.current = false;
     sendPlayerLeave("dead");
@@ -358,7 +359,9 @@ export default function AgarEducation() {
     setCurrentSkin(null);
     setDeathReason(`Session ended after collision with ${killerName}.`);
     setShowGate(true);
-    resetEducation({ includeObstacles: false });
+    setGuestMode(false);
+    setGuestName("");
+    resetCell({ includeObstacles: false });
   }
 
   function applyLocalBlobLoss(eatenBlobSnapshot = null) {
@@ -499,7 +502,7 @@ export default function AgarEducation() {
     return { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
   }
 
-  function resetEducation({ includeObstacles = true } = {}) {
+  function resetCell({ includeObstacles = true } = {}) {
     const canvas = canvasRef.current;
 
     if (!canvas) {
@@ -556,19 +559,20 @@ export default function AgarEducation() {
     updateHudFromBlobs(blobsRef.current);
   }
 
-  function beginEducationRun(safeName) {
+  function beginCellRun(safeName) {
     leaveSentRef.current = false;
     playerNameRef.current = safeName;
     playerColorRef.current = colorFromId(`${sessionIdRef.current}-${safeName}`);
+    setPlayerColor(playerColorRef.current);
     isAliveRef.current = true;
     spikeLogicStartedLoggedRef.current = false;
     setUsername(safeName);
     setDeathReason("");
-    resetEducation({ includeObstacles: true });
+    resetCell({ includeObstacles: true });
 
-    setEducationStartedValue(true);
+    setCellStartedValue(true);
     setShowGate(false);
-    console.info("[AgarEducation] Education started", { safeName });
+    console.info("[AgarCell] Education started", { safeName });
     sendSpikeState(true);
 
     const channel = channelRef.current;
@@ -579,7 +583,7 @@ export default function AgarEducation() {
           username: safeName,
         });
       } catch (error) {
-        console.error("[AgarEducation] failed to track presence", error);
+        console.error("[AgarCell] failed to track presence", error);
       }
     }
 
@@ -593,7 +597,7 @@ export default function AgarEducation() {
       return;
     }
 
-    console.info("[AgarEducation] Start button clicked", { safeName });
+    console.info("[AgarCell] Start button clicked", { safeName });
 
     try {
       setUsername(safeName);
@@ -604,16 +608,16 @@ export default function AgarEducation() {
         clearInterval(startCountdownTimerRef.current);
       }
 
-      setEducationStartedValue(false);
+      setCellStartedValue(false);
       setStartCountdown(3);
-      resetEducation({ includeObstacles: false });
+      resetCell({ includeObstacles: false });
 
       startCountdownTimerRef.current = setInterval(() => {
         setStartCountdown((prev) => {
           if (prev <= 1) {
             clearInterval(startCountdownTimerRef.current);
             startCountdownTimerRef.current = null;
-            beginEducationRun(safeName);
+            beginCellRun(safeName);
             return 0;
           }
 
@@ -622,10 +626,10 @@ export default function AgarEducation() {
       }, 1000);
     } catch (error) {
       isAliveRef.current = false;
-      setEducationStartedValue(false);
+      setCellStartedValue(false);
       setStartCountdown(0);
-      console.error("[AgarEducation] failed to start education", error);
-      setDeathReason("Failed to start education. Please try again.");
+      console.error("[AgarCell] failed to start education", error);
+      setDeathReason("Failed to start cell. Please try again.");
       setShowGate(true);
     }
   }
@@ -669,7 +673,7 @@ export default function AgarEducation() {
     }
 
     function handleKeyDown(event) {
-      if (!isAliveRef.current || !educationStartedRef.current) {
+      if (!isAliveRef.current || !cellStartedRef.current) {
         return;
       }
 
@@ -744,9 +748,9 @@ export default function AgarEducation() {
       }
     }
 
-    function educationLoop() {
+    function cellLoop() {
       if (!rafReadyRef.current) {
-        animationRef.current = requestAnimationFrame(educationLoop);
+        animationRef.current = requestAnimationFrame(cellLoop);
         return;
       }
 
@@ -761,10 +765,10 @@ export default function AgarEducation() {
       let blobs = blobsRef.current;
       const now = Date.now();
 
-      if (educationStartedRef.current && isAliveRef.current) {
+      if (cellStartedRef.current && isAliveRef.current) {
         if (!spikeLogicStartedLoggedRef.current) {
           spikeLogicStartedLoggedRef.current = true;
-          console.info("[AgarEducation] Spike logic started");
+          console.info("[AgarCell] Spike logic started");
         }
 
         const prevSpikeHash = spikesRef.current.map((s) => `${s.id}:${Math.round(s.x)},${Math.round(s.y)}`).join("|") + "/" + warningZonesRef.current.length;
@@ -785,7 +789,7 @@ export default function AgarEducation() {
         }
       }
 
-      if (isAliveRef.current && educationStartedRef.current) {
+      if (isAliveRef.current && cellStartedRef.current) {
         updateBlobMovement(blobs, mouseTargetRef.current);
         separateOverlappingBlobs(blobs);
 
@@ -852,7 +856,7 @@ export default function AgarEducation() {
             if (!nextLocalBlobs.length) {
               handleDefeat("a bot");
               // RAF is always rescheduled after the try block; return safely here.
-              animationRef.current = requestAnimationFrame(educationLoop);
+              animationRef.current = requestAnimationFrame(cellLoop);
               return;
             }
           }
@@ -931,7 +935,7 @@ export default function AgarEducation() {
       ctx.lineWidth = 5;
       ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
-      if (educationStartedRef.current) {
+      if (cellStartedRef.current) {
         drawWarningZones(ctx, warningZonesRef.current, now);
         drawSpikeBalls(ctx, spikesRef.current);
       }
@@ -1003,10 +1007,10 @@ export default function AgarEducation() {
 
       } catch (err) {
         // Never let a single bad frame kill the animation loop.
-        console.error("[educationLoop] uncaught frame error — loop continues", err);
+        console.error("[cellLoop] uncaught frame error — loop continues", err);
       }
 
-      animationRef.current = requestAnimationFrame(educationLoop);
+      animationRef.current = requestAnimationFrame(cellLoop);
     }
 
     async function setupRealtime() {
@@ -1163,7 +1167,7 @@ export default function AgarEducation() {
             // Auto-reconnect after a short back-off so broadcasts resume.
             setTimeout(() => {
               if (isDisposed) return;
-              console.info("[AgarEducation] Channel dropped (", status, "), reconnecting…");
+              console.info("[AgarCell] Channel dropped (", status, "), reconnecting…");
               try { channelRef.current?.unsubscribe(); } catch (_) {}
               channelRef.current = null;
               setupRealtime();
@@ -1188,8 +1192,8 @@ export default function AgarEducation() {
     }
 
     resizeCanvas();
-    console.info("[AgarEducation] App mounted");
-    resetEducation({ includeObstacles: false });
+    console.info("[AgarCell] App mounted");
+    resetCell({ includeObstacles: false });
     setupRealtime();
 
     window.addEventListener("resize", resizeCanvas);
@@ -1198,7 +1202,7 @@ export default function AgarEducation() {
     window.addEventListener("beforeunload", handleBeforeUnload);
     window.addEventListener("pagehide", handlePageHide);
 
-    educationLoop();
+    cellLoop();
 
     return () => {
       if (startCountdownTimerRef.current) {
@@ -1227,13 +1231,15 @@ export default function AgarEducation() {
   return (
     <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4">
       <div className="mx-auto max-w-[1600px] space-y-3">
-        <EducationHeader
+        <CellHeader
           score={score}
           size={size}
           parts={parts}
           onlinePlayers={onlinePlayers}
           leaderboardPlayers={leaderboardPlayers}
           currentSkin={currentSkin}
+          playerColor={playerColor}
+          username={username}
           onSelectSkin={(skinId) => {
             currentSkinRef.current = skinId;
             setCurrentSkin(skinId);
@@ -1241,30 +1247,100 @@ export default function AgarEducation() {
             if (def) preloadSkin(def.id, def.src);
           }}
         />
-        <EducationArena
-          canvasRef={canvasRef}
-          isActive={educationStarted}
-        />
-        <EducationFooter
-          onRestart={() => resetEducation({ includeObstacles: educationStartedRef.current })}
-          username={username}
-          connectionStatus={connectionStatus}
-        />
+
+        {/* Arena wrapper — blurred + overlay when gate is open */}
+        <div className="relative">
+          <div className={showGate ? "pointer-events-none select-none blur-sm" : ""}>
+            <CellArena canvasRef={canvasRef} isActive={cellStarted} />
+          </div>
+
+          {showGate && (
+            <div className="absolute inset-0 z-40 flex items-center justify-center p-4">
+              <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900/95 p-8 shadow-2xl backdrop-blur-sm">
+                {deathReason ? (
+                  <>
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className="text-2xl">💀</span>
+                      <h2 className="text-xl font-bold text-white">Session Ended</h2>
+                    </div>
+                    <p className="mb-6 text-sm text-slate-400">{deathReason}</p>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="mb-1 text-2xl font-bold text-white">Join the Arena</h2>
+                    <p className="mb-6 text-sm text-slate-400">
+                      Eat others, grow bigger, survive.
+                    </p>
+                  </>
+                )}
+
+                {guestMode ? (
+                  /* ── Guest username form ── */
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const name = guestName.trim().slice(0, 18);
+                      if (name) startRunWithUsername(name);
+                    }}
+                    className="space-y-3"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setGuestMode(false)}
+                      className="mb-2 flex items-center gap-1 text-xs text-slate-500 transition hover:text-slate-300"
+                    >
+                      ← Back
+                    </button>
+                    <label className="block text-sm font-medium text-slate-300">
+                      Choose a name
+                    </label>
+                    <input
+                      autoFocus
+                      type="text"
+                      maxLength={18}
+                      placeholder="Your name…"
+                      value={guestName}
+                      onChange={(e) => setGuestName(e.target.value)}
+                      className="w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!guestName.trim()}
+                      className="w-full rounded-xl bg-emerald-500 py-3 font-bold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Start Playing →
+                    </button>
+                  </form>
+                ) : (
+                  /* ── Initial choice ── */
+                  <div className="space-y-3">
+                    <button
+                      className="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 py-3.5 font-bold text-slate-950 shadow-lg shadow-emerald-900/40 transition-all hover:from-emerald-400 hover:to-cyan-400"
+                    >
+                      Log in / Sign up
+                    </button>
+
+                    <div className="flex items-center gap-3 text-slate-600">
+                      <span className="flex-1 border-t border-slate-700" />
+                      <span className="text-xs uppercase tracking-wide">or</span>
+                      <span className="flex-1 border-t border-slate-700" />
+                    </div>
+
+                    <button
+                      onClick={() => setGuestMode(true)}
+                      className="w-full rounded-xl border border-slate-600 py-3 text-sm font-medium text-slate-300 transition-colors hover:border-slate-500 hover:bg-slate-800 hover:text-white"
+                    >
+                      Play without registration
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
-      <UsernameGate
-        key={`${showGate ? "open" : "closed"}-${username}-${deathReason}`}
-        open={showGate}
-        defaultName={username}
-        title={deathReason ? "Session Ended" : "Join Shared Simulation"}
-        message={
-          deathReason ||
-          "Enter your username to start. Other learners can join the same simulation live."
-        }
-        onSubmit={startRunWithUsername}
-      />
-
-      {!showGate && !educationStarted && startCountdown > 0 ? (
+      {!showGate && !cellStarted && startCountdown > 0 ? (
         <div className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center">
           <div className="rounded-2xl border border-slate-700 bg-slate-900/90 px-6 py-5 text-center shadow-xl backdrop-blur-sm">
             <p className="text-sm uppercase tracking-wide text-slate-300">Starting In</p>

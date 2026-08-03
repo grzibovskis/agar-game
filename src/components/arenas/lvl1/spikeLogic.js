@@ -9,8 +9,8 @@ import {
   SPIKE_WARNING_RADIUS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
-} from "./constants";
-import { clamp } from "./math";
+} from "@/components/cell/logic/constants";
+import { clamp } from "@/components/cell/logic/math";
 
 const REPOSITION_RETRY_MS = 5_000;
 const POSITION_ATTEMPTS = 120;
