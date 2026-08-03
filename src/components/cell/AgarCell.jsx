@@ -42,6 +42,14 @@ import {
   splitToMaxCells,
   updateSpikesAndWarnings,
 } from "@/components/arenas/lvl1/spikeLogic";
+import {
+  MAIN_TO_LAB_PORTAL,
+  applyLabyrinthCollisions,
+  createLabyrinthState,
+  drawLabyrinthArena,
+  drawPortal,
+  isCircleInPortal,
+} from "@/components/arenas/lvl2/labyrinthLogic";
 import CellHeader from "@/components/layout/CellHeader";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
@@ -116,7 +124,14 @@ export default function AgarCell() {
   const warningZonesRef = useRef([]);
   const botsRef = useRef([]);
   const spikeEpochRef = useRef(0);
-  const lastSpikeBroadcastRef = useRef(0);
+  const lastSpikeBroadcastRef  = useRef(0);
+  const spikeImmunityUntilRef  = useRef(0); // ms timestamp until spike immunity expires
+  const ejectedFoodRef         = useRef([]);
+  const ejectedIdRef           = useRef(0);
+  const arenaModeRef           = useRef("main");
+  const labyrinthRef           = useRef(createLabyrinthState());
+  const portalCooldownUntilRef = useRef(0);
+  const dangerWallHitAtRef     = useRef(0);
 
   const [score, setScore] = useState(0);
   const [size, setSize] = useState(22);
@@ -134,6 +149,10 @@ export default function AgarCell() {
   const [currentSkin, setCurrentSkin] = useState(null);
   const currentSkinRef = useRef(null);
   const [playerColor, setPlayerColor] = useState("#22c55e");
+  const [faceExpression, setFaceExpression] = useState("serious");
+  const lastScoreIncreaseTimeRef = useRef(Date.now());
+  const prevScoreForFaceRef = useRef(0);
+  const [arenaMode, setArenaMode] = useState("main");
 
   function createBlob(x, y, radius, vx = 0, vy = 0) {
     const id = blobIdRef.current;
@@ -149,10 +168,108 @@ export default function AgarCell() {
     };
   }
 
+  // Eject a glowing blue food piece toward the mouse (press E)
+  function ejectFood() {
+    if (!isAliveRef.current || !cellStartedRef.current) return;
+    if (arenaModeRef.current !== "main") return;
+    const blobs = blobsRef.current;
+    if (!blobs.length) return;
+    const value = Math.max(1, Math.floor(scoreRef.current / 100));
+    if (scoreRef.current < value) return;
+    const centroid = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    const mouse    = mouseTargetRef.current;
+    const dx = mouse.x - centroid.x;
+    const dy = mouse.y - centroid.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const launchSpeed = 18;
+    const combinedR   = getCombinedRadius(blobs);
+    ejectedFoodRef.current.push({
+      id: ejectedIdRef.current++,
+      x: centroid.x + nx * (combinedR + 6),
+      y: centroid.y + ny * (combinedR + 6),
+      vx: nx * launchSpeed,
+      vy: ny * launchSpeed,
+      value,
+      radius: 3,
+      createdAt: Date.now(),
+    });
+    setScoreValue(Math.max(0, scoreRef.current - value));
+  }
+
   function setCellStartedValue(next) {
     cellStartedRef.current = next;
     setCellStarted(next);
   }
+
+  function setArenaModeValue(next) {
+    arenaModeRef.current = next;
+    setArenaMode(next);
+  }
+
+  function normalizeForLabyrinth(position) {
+    const combined = getCombinedRadius(blobsRef.current);
+    const normalizedRadius = clamp(combined, 12, 28);
+    blobsRef.current = [createBlob(position.x, position.y, normalizedRadius)];
+    mergeStateRef.current.nextMergeAt = null;
+    updateHudFromBlobs(blobsRef.current);
+  }
+
+  function enterLabyrinth(now) {
+    if (now < portalCooldownUntilRef.current) {
+      return;
+    }
+
+    const labyrinth = labyrinthRef.current;
+    normalizeForLabyrinth(labyrinth.start);
+    setArenaModeValue("labyrinth");
+    portalCooldownUntilRef.current = now + 1200;
+    dangerWallHitAtRef.current = 0;
+    ejectedFoodRef.current = [];
+    sendPlayerState(true);
+  }
+
+  function returnToMainArena(now) {
+    if (now < portalCooldownUntilRef.current) {
+      return;
+    }
+
+    const labyrinth = labyrinthRef.current;
+    const combined = getCombinedRadius(blobsRef.current);
+    const safeRadius = clamp(combined, 12, 42);
+    blobsRef.current = [createBlob(labyrinth.returnPos.x, labyrinth.returnPos.y, safeRadius)];
+    mergeStateRef.current.nextMergeAt = null;
+    updateHudFromBlobs(blobsRef.current);
+    setArenaModeValue("main");
+    portalCooldownUntilRef.current = now + 1200;
+    sendPlayerState(true);
+  }
+
+  // Face expression: smile on eat, surprise on milestone, serious after 10s idle
+  useEffect(() => {
+    if (score > prevScoreForFaceRef.current) {
+      lastScoreIncreaseTimeRef.current = Date.now();
+      const crossedMilestone =
+        Math.floor(score / 10) > Math.floor(prevScoreForFaceRef.current / 10);
+      prevScoreForFaceRef.current = score;
+      if (crossedMilestone) {
+        setFaceExpression("surprise");
+        setTimeout(() => setFaceExpression("smile"), 1_500);
+      } else {
+        setFaceExpression("smile");
+      }
+    }
+  }, [score]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (Date.now() - lastScoreIncreaseTimeRef.current > 10_000) {
+        setFaceExpression((cur) => (cur === "serious" ? cur : "serious"));
+      }
+    }, 2_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     console.info("[AgarCell] educationStarted state changed", { cellStarted });
@@ -361,6 +478,8 @@ export default function AgarCell() {
     setShowGate(true);
     setGuestMode(false);
     setGuestName("");
+    setFaceExpression("serious");
+    prevScoreForFaceRef.current = 0;
     resetCell({ includeObstacles: false });
   }
 
@@ -520,6 +639,11 @@ export default function AgarCell() {
       warningZonesRef.current = [];
       botsRef.current = [];
     }
+    spikeImmunityUntilRef.current = 0;
+    ejectedFoodRef.current = [];
+    setArenaModeValue("main");
+    portalCooldownUntilRef.current = 0;
+    dangerWallHitAtRef.current = 0;
 
     // Pick a safe spawn that avoids spikes and other players.
     const { x: centerX, y: centerY } = findSafeSpawnPos();
@@ -677,6 +801,16 @@ export default function AgarCell() {
         return;
       }
 
+      if (arenaModeRef.current !== "main") {
+        return;
+      }
+
+      if (event.code === "KeyE") {
+        event.preventDefault();
+        ejectFood();
+        return;
+      }
+
       if (event.code !== "Space") {
         return;
       }
@@ -765,7 +899,7 @@ export default function AgarCell() {
       let blobs = blobsRef.current;
       const now = Date.now();
 
-      if (cellStartedRef.current && isAliveRef.current) {
+      if (cellStartedRef.current && isAliveRef.current && arenaModeRef.current === "main") {
         if (!spikeLogicStartedLoggedRef.current) {
           spikeLogicStartedLoggedRef.current = true;
           console.info("[AgarCell] Spike logic started");
@@ -793,117 +927,179 @@ export default function AgarCell() {
         updateBlobMovement(blobs, mouseTargetRef.current);
         separateOverlappingBlobs(blobs);
 
-        keepBlobsOutsideWarnings(blobs, warningZonesRef.current);
+        if (arenaModeRef.current === "main") {
+          // Skip warning avoidance + collision while immune; immune player passes through freely
+          const isSpImmune = now < spikeImmunityUntilRef.current;
+          if (!isSpImmune) {
+            keepBlobsOutsideWarnings(blobs, warningZonesRef.current);
 
-        const hitSpike = findSpikeCollision(blobs, spikesRef.current);
-
-        if (hitSpike) {
-          const beforeCount = blobs.length;
-          const splitToMax = splitToMaxCells(blobs, createBlob, hitSpike);
-          const didSplit = splitToMax.length > beforeCount;
-          blobsRef.current = splitToMax;
-          blobs = splitToMax;
-
-          if (didSplit) {
-            mergeStateRef.current.nextMergeAt = Date.now() + getMergeDelayMs(splitToMax.length);
-            updateHudFromBlobs(splitToMax);
-            sendPlayerState(true);
+            const hitSpike = findSpikeCollision(blobs, spikesRef.current);
+            if (hitSpike && getCombinedRadius(blobs) >= 20) {
+              const beforeCount = blobs.length;
+              const splitToMax = splitToMaxCells(blobs, createBlob, hitSpike, 16);
+              const didSplit = splitToMax.length > beforeCount;
+              blobsRef.current = splitToMax;
+              blobs = splitToMax;
+              spikeImmunityUntilRef.current = now + 10_000;
+              if (didSplit) {
+                mergeStateRef.current.nextMergeAt = now + getMergeDelayMs(splitToMax.length);
+                updateHudFromBlobs(splitToMax);
+                sendPlayerState(true);
+              }
+            }
           }
-        }
 
-        const { gainedScore, remainingFood } = consumeFood(blobs, foodRef.current);
-        foodRef.current = replenishFood(
-          remainingFood,
-          WORLD_WIDTH,
-          WORLD_HEIGHT,
-          getRestrictedZones(spikesRef.current, warningZonesRef.current)
-        );
+          const { gainedScore, remainingFood } = consumeFood(blobs, foodRef.current);
+          foodRef.current = replenishFood(
+            remainingFood,
+            WORLD_WIDTH,
+            WORLD_HEIGHT,
+            getRestrictedZones(spikesRef.current, warningZonesRef.current)
+          );
 
-        if (gainedScore > 0) {
-          setScoreValue(scoreRef.current + gainedScore);
-          updateHudFromBlobs(blobs);
-        }
+          if (gainedScore > 0) {
+            setScoreValue(scoreRef.current + gainedScore);
+            updateHudFromBlobs(blobs);
+          }
 
-        // ── Bot AI update ────────────────────────────────────────────
-        {
-          const totalHumans = 1 + remotePlayersRef.current.size;
-          const maxActive   = Math.max(0, 10 - totalHumans);
-          const botResult   = updateBots({
-            bots: botsRef.current,
-            now,
-            food: foodRef.current,
-            maxActive,
-            localBlobs: blobs,
-            remotePlayers: remotePlayersRef.current,
+          if (blobs.some((blob) => isCircleInPortal(blob, MAIN_TO_LAB_PORTAL))) {
+            enterLabyrinth(now);
+            blobs = blobsRef.current;
+          }
+
+          // ── Ejected food: physics + local collection ─────────────────
+          ejectedFoodRef.current = ejectedFoodRef.current
+            .filter((p) => now - p.createdAt < 30_000)
+            .map((p) => ({
+              ...p,
+              x:  clamp(p.x + p.vx, p.radius, WORLD_WIDTH  - p.radius),
+              y:  clamp(p.y + p.vy, p.radius, WORLD_HEIGHT - p.radius),
+              vx: p.vx * 0.92,
+              vy: p.vy * 0.92,
+            }));
+
+          if (ejectedFoodRef.current.length) {
+            let gained = 0;
+            const eaten = new Set();
+            for (const piece of ejectedFoodRef.current) {
+              for (const blob of blobs) {
+                if (!eaten.has(piece.id) && blob.radius >= 3 &&
+                    Math.hypot(blob.x - piece.x, blob.y - piece.y) < blob.radius) {
+                  eaten.add(piece.id);
+                  gained += piece.value;
+                }
+              }
+            }
+            if (eaten.size) {
+              ejectedFoodRef.current = ejectedFoodRef.current.filter((p) => !eaten.has(p.id));
+              if (gained > 0) setScoreValue(scoreRef.current + gained);
+            }
+          }
+
+          // ── Bot AI update ────────────────────────────────────────────
+          {
+            const totalHumans = 1 + remotePlayersRef.current.size;
+            const maxActive   = Math.max(0, 10 - totalHumans);
+            const botResult   = updateBots({
+              bots: botsRef.current,
+              now,
+              food: foodRef.current,
+              maxActive,
+              localBlobs: blobs,
+              remotePlayers: remotePlayersRef.current,
+            });
+            botsRef.current = botResult.bots;
+            // Remove food consumed by bots
+            foodRef.current = foodRef.current.filter((_, i) => !botResult.consumedFoodIndices.has(i));
+
+            // Bot eats local blobs
+            const { updatedBots, nextLocalBlobs, botAteLocal, eatenLocalBlobs } = resolveBotVsLocal(botsRef.current, blobs);
+            if (botAteLocal) {
+              botsRef.current = updatedBots;
+              blobs = nextLocalBlobs;
+              blobsRef.current = nextLocalBlobs;
+              // Deduct score for each blob eaten by a bot
+              const penalty = eatenLocalBlobs.reduce(
+                (sum, b) => sum + Math.max(3, Math.round(b.radius * 0.6)), 0
+              );
+              setScoreValue(Math.max(0, scoreRef.current - penalty));
+              updateHudFromBlobs(nextLocalBlobs);
+              sendPlayerState(true);
+              if (!nextLocalBlobs.length) {
+                handleDefeat("a bot");
+                // RAF is always rescheduled after the try block; return safely here.
+                animationRef.current = requestAnimationFrame(cellLoop);
+                return;
+              }
+            }
+          }
+
+          // ── PvP: local eats remote players and bot blobs ─────────────
+          const botRemotes = botsRef.current
+            .filter(b => b.active && b.blobs.length > 0)
+            .map(b => ({
+              sessionId: b.id,
+              id: b.id,
+              username: b.name,
+              color: b.color,
+              x: b.blobs[0].x,
+              y: b.blobs[0].y,
+              radius: b.blobs[0].radius,
+              blobs: b.blobs,
+              isBot: true,
+            }));
+
+          resolvePvpCombat(blobs, [...remotePlayersRef.current.values(), ...botRemotes], {
+            onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
+              if (remote.isBot) {
+                botsRef.current = botsRef.current.map(bot =>
+                  bot.id === remote.id
+                    ? { ...bot, blobs: bot.blobs.filter((_, i) => i !== remoteBlobIndex) }
+                    : bot
+                );
+                setScoreValue(scoreRef.current + Math.max(6, Math.round((remoteBlob?.radius || 0) * 0.9)));
+                updateHudFromBlobs(blobs);
+                sendPlayerState(true);
+                return;
+              }
+              const eatenBlob =
+                applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex, remoteBlob) || remoteBlob;
+              setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
+              updateHudFromBlobs(blobs);
+              sendPlayerBlobEaten(
+                remote.sessionId,
+                sessionIdRef.current,
+                playerNameRef.current || "Unknown",
+                eatenBlob
+              );
+
+              sendPlayerState(true);
+            },
           });
-          botsRef.current = botResult.bots;
-          // Remove food consumed by bots
-          foodRef.current = foodRef.current.filter((_, i) => !botResult.consumedFoodIndices.has(i));
+        } else {
+          const labyrinth = labyrinthRef.current;
+          const { dangerPenalty } = applyLabyrinthCollisions(blobs, labyrinth, now);
 
-          // Bot eats local blobs
-          const { updatedBots, nextLocalBlobs, botAteLocal, eatenLocalBlobs } = resolveBotVsLocal(botsRef.current, blobs);
-          if (botAteLocal) {
-            botsRef.current = updatedBots;
-            blobs = nextLocalBlobs;
-            blobsRef.current = nextLocalBlobs;
-            // Deduct score for each blob eaten by a bot
-            const penalty = eatenLocalBlobs.reduce(
-              (sum, b) => sum + Math.max(3, Math.round(b.radius * 0.6)), 0
-            );
-            setScoreValue(Math.max(0, scoreRef.current - penalty));
-            updateHudFromBlobs(nextLocalBlobs);
-            sendPlayerState(true);
-            if (!nextLocalBlobs.length) {
-              handleDefeat("a bot");
-              // RAF is always rescheduled after the try block; return safely here.
+          if (dangerPenalty > 0 && now - dangerWallHitAtRef.current >= 700) {
+            dangerWallHitAtRef.current = now;
+            const nextScore = Math.max(0, scoreRef.current - dangerPenalty);
+            setScoreValue(nextScore);
+            if (nextScore <= 0) {
+              handleDefeat("a labyrinth trap");
               animationRef.current = requestAnimationFrame(cellLoop);
               return;
             }
           }
+
+          const touchedExit = labyrinth.endPortals.some((portal) =>
+            blobs.some((blob) => isCircleInPortal(blob, portal))
+          );
+
+          if (touchedExit) {
+            returnToMainArena(now);
+            blobs = blobsRef.current;
+          }
         }
-
-        // ── PvP: local eats remote players and bot blobs ─────────────
-        const botRemotes = botsRef.current
-          .filter(b => b.active && b.blobs.length > 0)
-          .map(b => ({
-            sessionId: b.id,
-            id: b.id,
-            username: b.name,
-            color: b.color,
-            x: b.blobs[0].x,
-            y: b.blobs[0].y,
-            radius: b.blobs[0].radius,
-            blobs: b.blobs,
-            isBot: true,
-          }));
-
-        resolvePvpCombat(blobs, [...remotePlayersRef.current.values(), ...botRemotes], {
-          onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
-            if (remote.isBot) {
-              botsRef.current = botsRef.current.map(bot =>
-                bot.id === remote.id
-                  ? { ...bot, blobs: bot.blobs.filter((_, i) => i !== remoteBlobIndex) }
-                  : bot
-              );
-              setScoreValue(scoreRef.current + Math.max(6, Math.round((remoteBlob?.radius || 0) * 0.9)));
-              updateHudFromBlobs(blobs);
-              sendPlayerState(true);
-              return;
-            }
-            const eatenBlob =
-              applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex, remoteBlob) || remoteBlob;
-            setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
-            updateHudFromBlobs(blobs);
-            sendPlayerBlobEaten(
-              remote.sessionId,
-              sessionIdRef.current,
-              playerNameRef.current || "Unknown",
-              eatenBlob
-            );
-
-            sendPlayerState(true);
-          },
-        });
       }
 
       pruneStaleRemotePlayers();
@@ -935,21 +1131,44 @@ export default function AgarCell() {
       ctx.lineWidth = 5;
       ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
-      if (cellStartedRef.current) {
-        drawWarningZones(ctx, warningZonesRef.current, now);
-        drawSpikeBalls(ctx, spikesRef.current);
+      if (arenaModeRef.current === "main") {
+        if (cellStartedRef.current) {
+          drawWarningZones(ctx, warningZonesRef.current, now);
+          drawSpikeBalls(ctx, spikesRef.current);
+        }
+
+        for (const point of foodRef.current) {
+          drawCircle(ctx, point.x, point.y, point.radius, point.color);
+        }
+
+        drawPortal(ctx, MAIN_TO_LAB_PORTAL, now, "Lab");
+
+        // ── Ejected food: glowing blue circles ──
+        if (ejectedFoodRef.current.length) {
+          ctx.save();
+          ctx.shadowColor = "#60a5fa";
+          ctx.shadowBlur  = 10;
+          for (const piece of ejectedFoodRef.current) {
+            ctx.beginPath();
+            ctx.arc(piece.x, piece.y, piece.radius, 0, Math.PI * 2);
+            ctx.fillStyle = "#3b82f6";
+            ctx.fill();
+          }
+          ctx.shadowBlur = 0;
+          ctx.restore();
+        }
+      } else {
+        drawLabyrinthArena(ctx, labyrinthRef.current, now);
       }
 
-      for (const point of foodRef.current) {
-        drawCircle(ctx, point.x, point.y, point.radius, point.color);
-      }
+      if (arenaModeRef.current === "main") {
+        for (const remote of remotePlayersRef.current.values()) {
+          drawRemotePlayer(ctx, remote);
+        }
 
-      for (const remote of remotePlayersRef.current.values()) {
-        drawRemotePlayer(ctx, remote);
-      }
-
-      for (const bot of botsRef.current) {
-        if (bot.active && bot.blobs.length) drawBotPlayer(ctx, bot, now);
+        for (const bot of botsRef.current) {
+          if (bot.active && bot.blobs.length) drawBotPlayer(ctx, bot, now);
+        }
       }
 
       for (const blob of blobs) {
@@ -1229,7 +1448,7 @@ export default function AgarCell() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4">
+    <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4" data-arena={arenaMode}>
       <div className="mx-auto max-w-[1600px] space-y-3">
         <CellHeader
           score={score}
@@ -1239,6 +1458,7 @@ export default function AgarCell() {
           leaderboardPlayers={leaderboardPlayers}
           currentSkin={currentSkin}
           playerColor={playerColor}
+          faceExpression={faceExpression}
           username={username}
           onSelectSkin={(skinId) => {
             currentSkinRef.current = skinId;

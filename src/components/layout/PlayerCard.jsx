@@ -2,24 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import SkinPicker from "@/components/layout/SkinPicker";
-import { getSkinById } from "@/components/cell/logic/skinData";
 
 // Animated circle with face — minimal breathing, drawn on canvas
-function PlayerCircle({ color, currentSkin }) {
-  const canvasRef = useRef(null);
-  const rafRef    = useRef(null);
-  const imgRef    = useRef(null);
-  const frameRef  = useRef(0);
+function PlayerCircle({ color, faceExpression = "serious" }) {
+  const canvasRef      = useRef(null);
+  const rafRef         = useRef(null);
+  const frameRef       = useRef(0);
+  const expressionRef  = useRef(faceExpression);
 
-  useEffect(() => {
-    imgRef.current = null;
-    if (!currentSkin) return;
-    const def = getSkinById(currentSkin);
-    if (!def) return;
-    const img = new Image();
-    img.src = def.src;
-    img.onload = () => { imgRef.current = img; };
-  }, [currentSkin]);
+  // Keep expressionRef in sync so the RAF loop always reads the latest value
+  useEffect(() => { expressionRef.current = faceExpression; }, [faceExpression]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -54,16 +46,6 @@ function PlayerCircle({ color, currentSkin }) {
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      // Skin image clipped to body
-      if (imgRef.current) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.clip();
-        ctx.drawImage(imgRef.current, cx - r, cy - r, r * 2, r * 2);
-        ctx.restore();
-      }
-
       // Specular highlight
       ctx.beginPath();
       ctx.arc(cx - r * 0.24, cy - r * 0.24, r * 0.26, 0, Math.PI * 2);
@@ -88,14 +70,28 @@ function PlayerCircle({ color, currentSkin }) {
         ctx.fill();
       }
 
-      // ── Serious straight mouth ──
-      ctx.beginPath();
-      ctx.moveTo(cx - r * 0.26, cy + r * 0.36);
-      ctx.lineTo(cx + r * 0.26, cy + r * 0.36);
-      ctx.strokeStyle = "rgba(0,0,0,0.5)";
-      ctx.lineWidth   = Math.max(1.5, r * 0.07);
-      ctx.lineCap     = "round";
-      ctx.stroke();
+      // ── Mouth: switches based on expression ──
+      const expr = expressionRef.current;
+      ctx.lineWidth = Math.max(1.5, r * 0.07);
+      ctx.lineCap   = "round";
+
+      if (expr === "smile") {
+        ctx.beginPath();
+        ctx.arc(cx, cy + r * 0.16, r * 0.3, 0.18 * Math.PI, 0.82 * Math.PI);
+        ctx.strokeStyle = "rgba(0,0,0,0.5)";
+        ctx.stroke();
+      } else if (expr === "surprise") {
+        ctx.beginPath();
+        ctx.arc(cx, cy + r * 0.38, r * 0.13, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(cx - r * 0.26, cy + r * 0.36);
+        ctx.lineTo(cx + r * 0.26, cy + r * 0.36);
+        ctx.strokeStyle = "rgba(0,0,0,0.5)";
+        ctx.stroke();
+      }
 
       frameRef.current += 1;
       rafRef.current = requestAnimationFrame(draw);
@@ -125,6 +121,7 @@ export default function PlayerCard({
   parts         = 1,
   onlinePlayers = 1,
   username      = "",
+  faceExpression = "serious",
 }) {
   const [open,      setOpen]      = useState(false);
   const [skinsOpen, setSkinsOpen] = useState(false);
@@ -157,17 +154,20 @@ export default function PlayerCard({
         <button
           onClick={handleToggle}
           aria-label="Player options"
-          className="flex flex-col items-center gap-1.5 rounded-2xl border border-slate-700 bg-slate-800/80 px-3 py-2.5 shadow-inner transition-colors hover:border-slate-500 hover:bg-slate-700/80"
+          className="flex flex-col items-center gap-1.5 rounded-2xl border border-slate-700 bg-slate-800/80 px-3 py-2.5 shadow-inner transition-all hover:brightness-110"
         >
-          <PlayerCircle color={playerColor} currentSkin={currentSkin} />
-          <span className="max-w-[96px] truncate text-center text-[11px] font-semibold tracking-wide text-slate-300">
+          <PlayerCircle color={playerColor} faceExpression={faceExpression} />
+          <span
+            className="max-w-[96px] truncate text-center text-[11px] font-semibold tracking-wide text-white"
+            style={{ textShadow: "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000" }}
+          >
             {username || "Guest"}
           </span>
         </button>
 
-        {/* ── Dropdown ── */}
+        {/* ── Dropdown: expands width when skins are open to fit 3-column grid ── */}
         {open && (
-          <div className="absolute left-0 top-full z-50 mt-2 w-52 rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
+          <div className={`absolute left-0 top-full z-50 mt-2 rounded-xl border border-slate-700 bg-slate-900 shadow-2xl transition-all ${skinsOpen ? "w-[364px]" : "w-52"}`}>
             <button
               onClick={() => setSkinsOpen((v) => !v)}
               className="flex w-full items-center justify-between rounded-t-xl px-4 py-3 text-sm font-medium text-slate-300 transition hover:bg-slate-800 hover:text-white"

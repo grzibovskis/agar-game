@@ -40,6 +40,7 @@ export default function CellHeader({
   onSelectSkin,
   playerColor = "#22c55e",
   username = "",
+  faceExpression = "serious",
 }) {
   const [showAll, setShowAll] = useState(false);
 
@@ -70,6 +71,7 @@ export default function CellHeader({
           parts={parts}
           onlinePlayers={onlinePlayers}
           username={username}
+          faceExpression={faceExpression}
         />
 
         {/* ── Leaderboard box ── */}
