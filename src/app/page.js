@@ -1,6 +1,6 @@
 
-import AgarGame from "@/components/AgarGame";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return <AgarGame />;
+  redirect("/cell");
 }
