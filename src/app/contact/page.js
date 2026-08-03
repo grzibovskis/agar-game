@@ -11,8 +11,7 @@ export default function ContactPage() {
       <main className="mx-auto max-w-3xl px-6 py-20">
         <h1 className="mb-4 text-4xl font-bold">Contact</h1>
         <p className="text-lg text-slate-300 leading-relaxed">
-          This is the Contact page. Reach out to the Income Team for questions,
-          feedback, or collaboration opportunities.
+          This is the Contact page.
         </p>
       </main>
     </div>
