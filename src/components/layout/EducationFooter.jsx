@@ -1,4 +1,4 @@
-export default function CellFooter({ onRestart, username, connectionStatus }) {
+export default function EducationFooter({ onRestart, username, connectionStatus }) {
   return (
     <div className="flex flex-wrap items-center gap-3">
       <button

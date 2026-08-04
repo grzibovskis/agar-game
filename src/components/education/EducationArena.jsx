@@ -1,4 +1,4 @@
-export default function CellArena({ canvasRef, isActive = false }) {
+export default function EducationArena({ canvasRef, isActive = false }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 p-2">
       <canvas

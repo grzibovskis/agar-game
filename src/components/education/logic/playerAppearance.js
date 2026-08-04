@@ -122,18 +122,15 @@ export function drawRemotePlayer(ctx, remote) {
       }
     }
 
-const labelText = remote.username || "Player";
-  const labelX = labelBlob.renderX ?? labelBlob.x;
-  const labelY = (labelBlob.renderY ?? labelBlob.y) + 4;
-  ctx.font = "bold 13px Arial";
-  ctx.textAlign = "center";
-  ctx.lineJoin = "round";
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "#000000";
-  ctx.strokeText(labelText, labelX, labelY);
-  ctx.fillStyle = "white";
-  ctx.fillText(labelText, labelX, labelY);
-  return;
+    ctx.fillStyle = "white";
+    ctx.font = "bold 13px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(
+      remote.username || "Player",
+      labelBlob.renderX ?? labelBlob.x,
+      (labelBlob.renderY ?? labelBlob.y) + 4
+    );
+    return;
   }
 
   const x = remote.renderX ?? remote.x;
@@ -155,15 +152,10 @@ const labelText = remote.username || "Player";
   } else {
     drawCircle(ctx, x, y, radius, remote.color || "#3b82f6", "#dbeafe");
   }
-  const remoteText = remote.username || "Player";
+  ctx.fillStyle = "white";
   ctx.font = "bold 13px Arial";
   ctx.textAlign = "center";
-  ctx.lineJoin = "round";
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "#000000";
-  ctx.strokeText(remoteText, x, y + 4);
-  ctx.fillStyle = "white";
-  ctx.fillText(remoteText, x, y + 4);
+  ctx.fillText(remote.username || "Player", x, y + 4);
 }
 
 // now = Date.now() value passed in from the game loop for animation
@@ -210,16 +202,11 @@ export function drawLocalBlob(ctx, blob, username, color, now = 0, skinId = null
   ctx.lineWidth = 2.5;
   ctx.stroke();
 
-  // Label with black outline for legibility
-  const localText = username || "YOU";
+  // Label
+  ctx.fillStyle = "white";
   ctx.font = `bold ${Math.max(10, Math.min(16, Math.round(displayRadius * 0.38)))}px Arial`;
   ctx.textAlign = "center";
-  ctx.lineJoin = "round";
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "#000000";
-  ctx.strokeText(localText, blob.x, blob.y + 5);
-  ctx.fillStyle = "white";
-  ctx.fillText(localText, blob.x, blob.y + 5);
+  ctx.fillText(username || "YOU", blob.x, blob.y + 5);
 }
 
 // Bot blobs: bacteria shape so they look distinct from human players

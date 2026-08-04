@@ -9,8 +9,8 @@ import {
   SPIKE_WARNING_RADIUS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
-} from "@/components/cell/logic/constants";
-import { clamp } from "@/components/cell/logic/math";
+} from "./constants";
+import { clamp } from "./math";
 
 const REPOSITION_RETRY_MS = 5_000;
 const POSITION_ATTEMPTS = 120;
@@ -221,12 +221,12 @@ export function findSpikeCollision(blobs, spikes) {
   return null;
 }
 
-export function splitToMaxCells(blobs, createBlob, origin = null, maxParts = MAX_BLOBS) {
+export function splitToMaxCells(blobs, createBlob, origin = null) {
   const minRadiusToSplit = MIN_SPLIT_RADIUS * Math.sqrt(2);
   let current = [...blobs];
 
   for (let round = 0; round < 8; round += 1) {
-    if (current.length >= maxParts) {
+    if (current.length >= MAX_BLOBS) {
       break;
     }
 
@@ -238,7 +238,7 @@ export function splitToMaxCells(blobs, createBlob, origin = null, maxParts = MAX
       const remaining = current.length - i - 1;
       const canSplit =
         blob.radius >= minRadiusToSplit &&
-        next.length + 2 + remaining <= maxParts;
+        next.length + 2 + remaining <= MAX_BLOBS;
 
       if (!canSplit) {
         next.push(blob);

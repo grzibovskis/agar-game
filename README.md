@@ -307,6 +307,4 @@ Help somebody else learn.
 
 And most importantly...
 
-**Have fun. 🚀🧟‍♂️** 
-
-DEVS
+**Have fun. 🚀🧟‍♂️**

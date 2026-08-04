@@ -1,4 +1,4 @@
-import { FOOD_TARGET } from "@/components/cell/logic/constants";
+import { FOOD_TARGET } from "./constants";
 
 function isInsideRestrictedZone(x, y, radius, restrictedZones) {
   return restrictedZones.some((zone) => {
