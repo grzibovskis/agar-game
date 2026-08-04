@@ -43,7 +43,9 @@ import {
   updateSpikesAndWarnings,
 } from "@/components/arenas/lvl1/spikeLogic";
 import {
+  KILLING_WALL_TOUCH_PENALTY,
   MAIN_TO_LAB_PORTAL,
+  TUNNEL_SPIKE_TOUCH_PENALTY,
   applyLabyrinthCollisions,
   createLabyrinthState,
   drawLabyrinthArena,
@@ -132,6 +134,7 @@ export default function AgarCell() {
   const labyrinthRef           = useRef(createLabyrinthState());
   const portalCooldownUntilRef = useRef(0);
   const dangerWallHitAtRef     = useRef(0);
+  const tunnelSpikeHitAtRef    = useRef(0);
 
   const [score, setScore] = useState(0);
   const [size, setSize] = useState(22);
@@ -226,6 +229,7 @@ export default function AgarCell() {
     setArenaModeValue("labyrinth");
     portalCooldownUntilRef.current = now + 1200;
     dangerWallHitAtRef.current = 0;
+    tunnelSpikeHitAtRef.current = 0;
     ejectedFoodRef.current = [];
     sendPlayerState(true);
   }
@@ -1078,20 +1082,33 @@ export default function AgarCell() {
           });
         } else {
           const labyrinth = labyrinthRef.current;
-          const { dangerPenalty } = applyLabyrinthCollisions(blobs, labyrinth, now);
+          const { killingWallHits, spikeHits } = applyLabyrinthCollisions(blobs, labyrinth, now);
 
-          if (dangerPenalty > 0 && now - dangerWallHitAtRef.current >= 700) {
+          if (killingWallHits > 0 && now - dangerWallHitAtRef.current >= 600) {
             dangerWallHitAtRef.current = now;
-            const nextScore = Math.max(0, scoreRef.current - dangerPenalty);
+            const totalPenalty = killingWallHits * KILLING_WALL_TOUCH_PENALTY;
+            const nextScore = Math.max(0, scoreRef.current - totalPenalty);
             setScoreValue(nextScore);
             if (nextScore <= 0) {
-              handleDefeat("a labyrinth trap");
+              handleDefeat("a tunnel killing wall");
               animationRef.current = requestAnimationFrame(cellLoop);
               return;
             }
           }
 
-          const touchedExit = labyrinth.endPortals.some((portal) =>
+          if (spikeHits > 0 && now - tunnelSpikeHitAtRef.current >= 180) {
+            tunnelSpikeHitAtRef.current = now;
+            const totalPenalty = spikeHits * TUNNEL_SPIKE_TOUCH_PENALTY;
+            const nextScore = Math.max(0, scoreRef.current - totalPenalty);
+            setScoreValue(nextScore);
+            if (nextScore <= 0) {
+              handleDefeat("tunnel spikes");
+              animationRef.current = requestAnimationFrame(cellLoop);
+              return;
+            }
+          }
+
+          const touchedExit = labyrinth.returnPortals.some((portal) =>
             blobs.some((blob) => isCircleInPortal(blob, portal))
           );
 
@@ -1141,7 +1158,7 @@ export default function AgarCell() {
           drawCircle(ctx, point.x, point.y, point.radius, point.color);
         }
 
-        drawPortal(ctx, MAIN_TO_LAB_PORTAL, now, "Lab");
+        drawPortal(ctx, MAIN_TO_LAB_PORTAL, now, "Tunnel");
 
         // ── Ejected food: glowing blue circles ──
         if (ejectedFoodRef.current.length) {

@@ -6,11 +6,14 @@ export const MAIN_TO_LAB_PORTAL = {
   radius: 56,
 };
 
-const LAB_BOUNDS = {
-  x: 420,
-  y: 420,
-  w: 2500,
-  h: 1600,
+export const KILLING_WALL_TOUCH_PENALTY = 50;
+export const TUNNEL_SPIKE_TOUCH_PENALTY = 5;
+
+const TUNNEL_BOUNDS = {
+  x: 120,
+  y: 340,
+  w: WORLD_WIDTH - 240,
+  h: WORLD_HEIGHT - 680,
 };
 
 function clampValue(value, min, max) {
@@ -21,55 +24,121 @@ function wallRect(x, y, w, h) {
   return { x, y, w, h };
 }
 
-function movingWall(x, y, w, h, cycleMs, closedMs, phaseMs, dangerousPenalty = 0) {
+function movingWall(x, y, w, h, cycleMs, closedMs, phaseMs) {
   return {
     rect: wallRect(x, y, w, h),
     cycleMs,
     closedMs,
     phaseMs,
-    dangerousPenalty,
   };
 }
 
+function createGateWalls(bounds, borderThickness) {
+  const walls = [];
+  const gateStartX = bounds.x + 520;
+  const gateStep = 430;
+  const gateCount = 7;
+  const gateWidth = 76;
+  const openingHeight = 390;
+  const openingPadding = 130;
+
+  for (let i = 0; i < gateCount; i += 1) {
+    const x = gateStartX + i * gateStep;
+    const openingY =
+      i % 2 === 0
+        ? bounds.y + openingPadding
+        : bounds.y + bounds.h - openingPadding - openingHeight;
+
+    const topY = bounds.y + borderThickness;
+    const topH = Math.max(0, openingY - topY);
+    if (topH > 0) {
+      walls.push(wallRect(x, topY, gateWidth, topH));
+    }
+
+    const bottomY = openingY + openingHeight;
+    const bottomEdge = bounds.y + bounds.h - borderThickness;
+    const bottomH = Math.max(0, bottomEdge - bottomY);
+    if (bottomH > 0) {
+      walls.push(wallRect(x, bottomY, gateWidth, bottomH));
+    }
+  }
+
+  return walls;
+}
+
+function createTunnelSpikes(bounds) {
+  const midY = bounds.y + bounds.h / 2;
+
+  return [
+    { id: "spike-1", x: bounds.x + 680, y: midY - 370, radius: 32 },
+    { id: "spike-2", x: bounds.x + 880, y: midY - 120, radius: 29 },
+    { id: "spike-3", x: bounds.x + 1260, y: midY + 300, radius: 34 },
+    { id: "spike-4", x: bounds.x + 1570, y: midY + 30, radius: 30 },
+    { id: "spike-5", x: bounds.x + 1980, y: midY - 350, radius: 31 },
+    { id: "spike-6", x: bounds.x + 2360, y: midY - 90, radius: 30 },
+    { id: "spike-7", x: bounds.x + 2740, y: midY + 320, radius: 33 },
+    { id: "spike-8", x: bounds.x + 3090, y: midY + 60, radius: 31 },
+  ];
+}
+
 export function createLabyrinthState() {
-  const B = LAB_BOUNDS;
+  const B = TUNNEL_BOUNDS;
   const t = 34;
+  const startPlatform = {
+    x: B.x + 56,
+    y: B.y + B.h / 2 - 240,
+    w: 270,
+    h: 480,
+  };
+  const endPlatform = {
+    x: B.x + B.w - 326,
+    y: B.y + B.h / 2 - 240,
+    w: 270,
+    h: 480,
+  };
 
   return {
     bounds: B,
-    start: { x: B.x + 120, y: B.y + B.h / 2 },
+    startPlatform,
+    endPlatform,
+    start: {
+      x: startPlatform.x + startPlatform.w / 2,
+      y: startPlatform.y + startPlatform.h / 2,
+    },
     returnPos: { x: WORLD_WIDTH - 340, y: WORLD_HEIGHT / 2 },
-    endPortals: [
-      { id: "to-main", x: B.x + B.w - 130, y: B.y + B.h * 0.32, radius: 46, label: "Main" },
-      { id: "to-next", x: B.x + B.w - 130, y: B.y + B.h * 0.68, radius: 46, label: "Next" },
+    returnPortals: [
+      {
+        id: "start-back",
+        x: startPlatform.x + 64,
+        y: startPlatform.y + startPlatform.h / 2,
+        radius: 46,
+        label: "Back",
+      },
+      {
+        id: "end-back",
+        x: endPlatform.x + endPlatform.w - 64,
+        y: endPlatform.y + endPlatform.h / 2,
+        radius: 46,
+        label: "Back",
+      },
     ],
     staticWalls: [
       wallRect(B.x, B.y, B.w, t),
       wallRect(B.x, B.y + B.h - t, B.w, t),
       wallRect(B.x, B.y, t, B.h),
       wallRect(B.x + B.w - t, B.y, t, B.h),
-
-      wallRect(B.x + 240, B.y + 160, 34, 1180),
-      wallRect(B.x + 520, B.y + 60, 34, 980),
-      wallRect(B.x + 820, B.y + 520, 34, 1040),
-      wallRect(B.x + 1120, B.y + 60, 34, 920),
-      wallRect(B.x + 1420, B.y + 520, 34, 1040),
-      wallRect(B.x + 1720, B.y + 60, 34, 920),
-      wallRect(B.x + 2020, B.y + 520, 34, 1040),
-
-      wallRect(B.x + 300, B.y + 310, 470, 30),
-      wallRect(B.x + 920, B.y + 300, 390, 30),
-      wallRect(B.x + 1540, B.y + 310, 330, 30),
-
-      wallRect(B.x + 300, B.y + 1170, 390, 30),
-      wallRect(B.x + 840, B.y + 1090, 470, 30),
-      wallRect(B.x + 1520, B.y + 1170, 390, 30),
+      ...createGateWalls(B, t),
     ],
     movingWalls: [
-      movingWall(B.x + 690, B.y + 700, 280, 28, 5_600, 3_800, 0, 5),
-      movingWall(B.x + 1280, B.y + 890, 28, 300, 5_200, 3_500, 1_500, 4),
-      movingWall(B.x + 1880, B.y + 700, 280, 28, 6_100, 4_100, 900, 6),
+      movingWall(B.x + 980, B.y + 720, 280, 32, 5_600, 3_700, 400),
+      movingWall(B.x + 1820, B.y + 2380, 280, 32, 5_200, 3_400, 1_400),
+      movingWall(B.x + 2660, B.y + 760, 280, 32, 6_000, 4_200, 900),
     ],
+    tunnelSpikes: createTunnelSpikes(B),
+    penalties: {
+      killingWall: KILLING_WALL_TOUCH_PENALTY,
+      spikeBall: TUNNEL_SPIKE_TOUCH_PENALTY,
+    },
   };
 }
 
@@ -113,7 +182,8 @@ function resolveCircleVsRect(blob, rect) {
 }
 
 export function applyLabyrinthCollisions(blobs, labyrinthState, now) {
-  let dangerPenalty = 0;
+  const hitKillingWalls = new Set();
+  const hitSpikeBalls = new Set();
 
   for (const blob of blobs) {
     for (const rect of labyrinthState.staticWalls) {
@@ -126,13 +196,39 @@ export function applyLabyrinthCollisions(blobs, labyrinthState, now) {
       }
 
       const collided = resolveCircleVsRect(blob, wall.rect);
-      if (collided && wall.dangerousPenalty > 0) {
-        dangerPenalty += wall.dangerousPenalty;
+      if (collided) {
+        hitKillingWalls.add(wall);
+      }
+    }
+
+    for (const spike of labyrinthState.tunnelSpikes) {
+      const dx = blob.x - spike.x;
+      const dy = blob.y - spike.y;
+      const dist = Math.hypot(dx, dy) || 0.0001;
+      const minDist = blob.radius + spike.radius;
+
+      if (dist >= minDist) {
+        continue;
+      }
+
+      const nx = dx / dist;
+      const ny = dy / dist;
+      blob.x += nx * (minDist - dist);
+      blob.y += ny * (minDist - dist);
+      hitSpikeBalls.add(spike.id);
+
+      if (Math.abs(nx) > Math.abs(ny)) {
+        blob.vx *= 0.5;
+      } else {
+        blob.vy *= 0.5;
       }
     }
   }
 
-  return { dangerPenalty };
+  return {
+    killingWallHits: hitKillingWalls.size,
+    spikeHits: hitSpikeBalls.size,
+  };
 }
 
 export function isCircleInPortal(circle, portal) {
@@ -186,9 +282,10 @@ export function drawPortal(ctx, portal, now, label = "") {
 
 export function drawLabyrinthArena(ctx, labyrinthState, now) {
   const B = labyrinthState.bounds;
+  const { startPlatform, endPlatform } = labyrinthState;
 
   ctx.save();
-  ctx.fillStyle = "#0f172a";
+  ctx.fillStyle = "#020617";
   ctx.fillRect(B.x, B.y, B.w, B.h);
 
   ctx.strokeStyle = "rgba(148,163,184,0.35)";
@@ -217,22 +314,46 @@ export function drawLabyrinthArena(ctx, labyrinthState, now) {
       continue;
     }
 
-    if (wall.dangerousPenalty > 0) {
-      ctx.save();
-      ctx.shadowColor = "rgba(248,113,113,0.75)";
-      ctx.shadowBlur = 14;
-      ctx.fillStyle = "#ef4444";
-      ctx.fillRect(wall.rect.x, wall.rect.y, wall.rect.w, wall.rect.h);
-      ctx.restore();
-    } else {
-      ctx.fillStyle = "#94a3b8";
-      ctx.fillRect(wall.rect.x, wall.rect.y, wall.rect.w, wall.rect.h);
+    ctx.save();
+    ctx.shadowColor = "rgba(248,113,113,0.75)";
+    ctx.shadowBlur = 14;
+    ctx.fillStyle = "#ef4444";
+    ctx.fillRect(wall.rect.x, wall.rect.y, wall.rect.w, wall.rect.h);
+    ctx.restore();
+  }
+
+  ctx.fillStyle = "rgba(56, 189, 248, 0.14)";
+  ctx.fillRect(startPlatform.x, startPlatform.y, startPlatform.w, startPlatform.h);
+  ctx.fillRect(endPlatform.x, endPlatform.y, endPlatform.w, endPlatform.h);
+
+  for (const spike of labyrinthState.tunnelSpikes) {
+    const spikesCount = 12;
+    const innerRadius = spike.radius * 0.72;
+
+    ctx.beginPath();
+    for (let i = 0; i < spikesCount * 2; i += 1) {
+      const ratio = i % 2 === 0 ? spike.radius : innerRadius;
+      const angle = (Math.PI * i) / spikesCount;
+      const px = spike.x + Math.cos(angle) * ratio;
+      const py = spike.y + Math.sin(angle) * ratio;
+
+      if (i === 0) {
+        ctx.moveTo(px, py);
+      } else {
+        ctx.lineTo(px, py);
+      }
     }
+    ctx.closePath();
+    ctx.fillStyle = "#22c55e";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#dcfce7";
+    ctx.stroke();
   }
 
   ctx.restore();
 
-  for (const portal of labyrinthState.endPortals) {
+  for (const portal of labyrinthState.returnPortals) {
     drawPortal(ctx, portal, now, portal.label);
   }
 }
