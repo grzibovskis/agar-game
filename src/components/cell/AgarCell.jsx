@@ -43,8 +43,8 @@ import {
   updateSpikesAndWarnings,
 } from "@/components/arenas/lvl1/spikeLogic";
 import {
-  KILLING_WALL_TOUCH_PENALTY,
   MAIN_TO_LAB_PORTAL,
+  TUNNEL_HAZARD_WALL_TOUCH_PENALTY,
   TUNNEL_SPIKE_TOUCH_PENALTY,
   applyLabyrinthCollisions,
   createLabyrinthState,
@@ -1082,15 +1082,15 @@ export default function AgarCell() {
           });
         } else {
           const labyrinth = labyrinthRef.current;
-          const { killingWallHits, spikeHits } = applyLabyrinthCollisions(blobs, labyrinth, now);
+          const { hazardWallHits, spikeHits } = applyLabyrinthCollisions(blobs, labyrinth, now);
 
-          if (killingWallHits > 0 && now - dangerWallHitAtRef.current >= 600) {
+          if (hazardWallHits > 0 && now - dangerWallHitAtRef.current >= 600) {
             dangerWallHitAtRef.current = now;
-            const totalPenalty = killingWallHits * KILLING_WALL_TOUCH_PENALTY;
+            const totalPenalty = hazardWallHits * TUNNEL_HAZARD_WALL_TOUCH_PENALTY;
             const nextScore = Math.max(0, scoreRef.current - totalPenalty);
             setScoreValue(nextScore);
             if (nextScore <= 0) {
-              handleDefeat("a tunnel killing wall");
+              handleDefeat("a tunnel hazard wall");
               animationRef.current = requestAnimationFrame(cellLoop);
               return;
             }

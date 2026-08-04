@@ -6,7 +6,7 @@ export const MAIN_TO_LAB_PORTAL = {
   radius: 56,
 };
 
-export const KILLING_WALL_TOUCH_PENALTY = 50;
+export const TUNNEL_HAZARD_WALL_TOUCH_PENALTY = 50;
 export const TUNNEL_SPIKE_TOUCH_PENALTY = 5;
 
 const TUNNEL_BOUNDS = {
@@ -136,7 +136,7 @@ export function createLabyrinthState() {
     ],
     tunnelSpikes: createTunnelSpikes(B),
     penalties: {
-      killingWall: KILLING_WALL_TOUCH_PENALTY,
+      hazardWall: TUNNEL_HAZARD_WALL_TOUCH_PENALTY,
       spikeBall: TUNNEL_SPIKE_TOUCH_PENALTY,
     },
   };
@@ -182,7 +182,7 @@ function resolveCircleVsRect(blob, rect) {
 }
 
 export function applyLabyrinthCollisions(blobs, labyrinthState, now) {
-  const hitKillingWalls = new Set();
+  const hitHazardWalls = new Set();
   const hitSpikeBalls = new Set();
 
   for (const blob of blobs) {
@@ -197,7 +197,7 @@ export function applyLabyrinthCollisions(blobs, labyrinthState, now) {
 
       const collided = resolveCircleVsRect(blob, wall.rect);
       if (collided) {
-        hitKillingWalls.add(wall);
+        hitHazardWalls.add(wall);
       }
     }
 
@@ -226,7 +226,7 @@ export function applyLabyrinthCollisions(blobs, labyrinthState, now) {
   }
 
   return {
-    killingWallHits: hitKillingWalls.size,
+    hazardWallHits: hitHazardWalls.size,
     spikeHits: hitSpikeBalls.size,
   };
 }
