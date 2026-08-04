@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import UsernameGate from "@/components/UsernameGate";
-import EducationArena from "@/components/education/EducationArena";
+import CellArena from "@/components/arenas/lvl1/CellArena";
 import {
   FOOD_TARGET,
   GRID_SIZE,
@@ -11,28 +10,28 @@ import {
   STATE_BROADCAST_MS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
-} from "@/components/education/logic/constants";
-import { clamp } from "@/components/education/logic/math";
+} from "@/components/cell/logic/constants";
+import { clamp } from "@/components/cell/logic/math";
 import {
   getBlobCentroid,
   getCombinedRadius,
   mergeClosestPairsOnce,
-} from "@/components/education/logic/blobLogic";
-import { createFood, drawGrid, replenishFood } from "@/components/education/logic/arenaLogic";
+} from "@/components/cell/logic/blobLogic";
+import { createFood, drawGrid, replenishFood } from "@/components/arenas/lvl1/arenaLogic";
 import {
   consumeFood,
   resolvePvpCombat,
   separateOverlappingBlobs,
   splitAndJump,
   updateBlobMovement,
-} from "@/components/education/logic/movementAttackLogic";
-import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer, drawBotPlayer, preloadSkin } from "@/components/education/logic/playerAppearance";
-import { SKINS, getSkinById } from "@/components/education/logic/skinData";
+} from "@/components/arenas/lvl1/movementAttackLogic";
+import { colorFromId, drawCircle, drawLocalBlob, drawRemotePlayer, drawBotPlayer, preloadSkin } from "@/components/cell/logic/playerAppearance";
+import { SKINS, getSkinById } from "@/components/cell/logic/skinData";
 import {
   createBots,
   updateBots,
   resolveBotVsLocal,
-} from "@/components/education/logic/botLogic";
+} from "@/components/arenas/lvl1/botLogic";
 import {
   createInitialSpikes,
   drawSpikeBalls,
@@ -42,9 +41,18 @@ import {
   keepBlobsOutsideWarnings,
   splitToMaxCells,
   updateSpikesAndWarnings,
-} from "@/components/education/logic/spikeLogic";
-import EducationHeader from "@/components/layout/EducationHeader";
-import EducationFooter from "@/components/layout/EducationFooter";
+} from "@/components/arenas/lvl1/spikeLogic";
+import {
+  KILLING_WALL_TOUCH_PENALTY,
+  MAIN_TO_LAB_PORTAL,
+  TUNNEL_SPIKE_TOUCH_PENALTY,
+  applyLabyrinthCollisions,
+  createLabyrinthState,
+  drawLabyrinthArena,
+  drawPortal,
+  isCircleInPortal,
+} from "@/components/arenas/lvl2/labyrinthLogic";
+import CellHeader from "@/components/layout/CellHeader";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 // Returns merge delay in ms based on number of blobs currently in play.
@@ -89,7 +97,7 @@ function summarizeBlobs(blobs, fallbackX = WORLD_WIDTH / 2, fallbackY = WORLD_HE
   };
 }
 
-export default function AgarEducation() {
+export default function AgarCell() {
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
   const rafReadyRef = useRef(false);
@@ -99,7 +107,7 @@ export default function AgarEducation() {
   const remotePlayersRef = useRef(new Map());
   const scoreRef = useRef(0);
   const isAliveRef = useRef(false);
-  const educationStartedRef = useRef(false);
+  const cellStartedRef = useRef(false);
   const spikeLogicStartedLoggedRef = useRef(false);
   const playerNameRef = useRef("");
   const playerColorRef = useRef("#22c55e");
@@ -118,13 +126,23 @@ export default function AgarEducation() {
   const warningZonesRef = useRef([]);
   const botsRef = useRef([]);
   const spikeEpochRef = useRef(0);
-  const lastSpikeBroadcastRef = useRef(0);
+  const lastSpikeBroadcastRef  = useRef(0);
+  const spikeImmunityUntilRef  = useRef(0); // ms timestamp until spike immunity expires
+  const ejectedFoodRef         = useRef([]);
+  const ejectedIdRef           = useRef(0);
+  const arenaModeRef           = useRef("main");
+  const labyrinthRef           = useRef(createLabyrinthState());
+  const portalCooldownUntilRef = useRef(0);
+  const dangerWallHitAtRef     = useRef(0);
+  const tunnelSpikeHitAtRef    = useRef(0);
 
   const [score, setScore] = useState(0);
   const [size, setSize] = useState(22);
   const [parts, setParts] = useState(1);
   const [showGate, setShowGate] = useState(true);
-  const [educationStarted, setEducationStarted] = useState(false);
+  const [guestMode, setGuestMode] = useState(false);
+  const [guestName, setGuestName] = useState("");
+  const [cellStarted, setCellStarted] = useState(false);
   const [deathReason, setDeathReason] = useState("");
   const [username, setUsername] = useState("");
   const [connectionStatus, setConnectionStatus] = useState("connecting");
@@ -133,6 +151,11 @@ export default function AgarEducation() {
   const [leaderboardPlayers, setLeaderboardPlayers] = useState([]);
   const [currentSkin, setCurrentSkin] = useState(null);
   const currentSkinRef = useRef(null);
+  const [playerColor, setPlayerColor] = useState("#22c55e");
+  const [faceExpression, setFaceExpression] = useState("serious");
+  const lastScoreIncreaseTimeRef = useRef(Date.now());
+  const prevScoreForFaceRef = useRef(0);
+  const [arenaMode, setArenaMode] = useState("main");
 
   function createBlob(x, y, radius, vx = 0, vy = 0) {
     const id = blobIdRef.current;
@@ -148,14 +171,113 @@ export default function AgarEducation() {
     };
   }
 
-  function setEducationStartedValue(next) {
-    educationStartedRef.current = next;
-    setEducationStarted(next);
+  // Eject a glowing blue food piece toward the mouse (press E)
+  function ejectFood() {
+    if (!isAliveRef.current || !cellStartedRef.current) return;
+    if (arenaModeRef.current !== "main") return;
+    const blobs = blobsRef.current;
+    if (!blobs.length) return;
+    const value = Math.max(1, Math.floor(scoreRef.current / 100));
+    if (scoreRef.current < value) return;
+    const centroid = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    const mouse    = mouseTargetRef.current;
+    const dx = mouse.x - centroid.x;
+    const dy = mouse.y - centroid.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const launchSpeed = 18;
+    const combinedR   = getCombinedRadius(blobs);
+    ejectedFoodRef.current.push({
+      id: ejectedIdRef.current++,
+      x: centroid.x + nx * (combinedR + 6),
+      y: centroid.y + ny * (combinedR + 6),
+      vx: nx * launchSpeed,
+      vy: ny * launchSpeed,
+      value,
+      radius: 3,
+      createdAt: Date.now(),
+    });
+    setScoreValue(Math.max(0, scoreRef.current - value));
   }
 
+  function setCellStartedValue(next) {
+    cellStartedRef.current = next;
+    setCellStarted(next);
+  }
+
+  function setArenaModeValue(next) {
+    arenaModeRef.current = next;
+    setArenaMode(next);
+  }
+
+  function normalizeForLabyrinth(position) {
+    const combined = getCombinedRadius(blobsRef.current);
+    const normalizedRadius = clamp(combined, 12, 28);
+    blobsRef.current = [createBlob(position.x, position.y, normalizedRadius)];
+    mergeStateRef.current.nextMergeAt = null;
+    updateHudFromBlobs(blobsRef.current);
+  }
+
+  function enterLabyrinth(now) {
+    if (now < portalCooldownUntilRef.current) {
+      return;
+    }
+
+    const labyrinth = labyrinthRef.current;
+    normalizeForLabyrinth(labyrinth.start);
+    setArenaModeValue("labyrinth");
+    portalCooldownUntilRef.current = now + 1200;
+    dangerWallHitAtRef.current = 0;
+    tunnelSpikeHitAtRef.current = 0;
+    ejectedFoodRef.current = [];
+    sendPlayerState(true);
+  }
+
+  function returnToMainArena(now) {
+    if (now < portalCooldownUntilRef.current) {
+      return;
+    }
+
+    const labyrinth = labyrinthRef.current;
+    const combined = getCombinedRadius(blobsRef.current);
+    const safeRadius = clamp(combined, 12, 42);
+    blobsRef.current = [createBlob(labyrinth.returnPos.x, labyrinth.returnPos.y, safeRadius)];
+    mergeStateRef.current.nextMergeAt = null;
+    updateHudFromBlobs(blobsRef.current);
+    setArenaModeValue("main");
+    portalCooldownUntilRef.current = now + 1200;
+    sendPlayerState(true);
+  }
+
+  // Face expression: smile on eat, surprise on milestone, serious after 10s idle
   useEffect(() => {
-    console.info("[AgarEducation] educationStarted state changed", { educationStarted });
-  }, [educationStarted]);
+    if (score > prevScoreForFaceRef.current) {
+      lastScoreIncreaseTimeRef.current = Date.now();
+      const crossedMilestone =
+        Math.floor(score / 10) > Math.floor(prevScoreForFaceRef.current / 10);
+      prevScoreForFaceRef.current = score;
+      if (crossedMilestone) {
+        setFaceExpression("surprise");
+        setTimeout(() => setFaceExpression("smile"), 1_500);
+      } else {
+        setFaceExpression("smile");
+      }
+    }
+  }, [score]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (Date.now() - lastScoreIncreaseTimeRef.current > 10_000) {
+        setFaceExpression((cur) => (cur === "serious" ? cur : "serious"));
+      }
+    }, 2_000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    console.info("[AgarCell] educationStarted state changed", { cellStarted });
+  }, [cellStarted]);
 
   function updateHudFromBlobs(blobs) {
     setParts(blobs.length);
@@ -212,7 +334,7 @@ export default function AgarEducation() {
         },
       });
     } catch (error) {
-      console.error("[AgarEducation] failed to send spike_state", error);
+      console.error("[AgarCell] failed to send spike_state", error);
     }
   }
 
@@ -253,7 +375,7 @@ export default function AgarEducation() {
         },
       });
     } catch (error) {
-      console.error("[AgarEducation] failed to send player_state", error);
+      console.error("[AgarCell] failed to send player_state", error);
     }
   }
 
@@ -279,7 +401,7 @@ export default function AgarEducation() {
 
       channel.untrack();
     } catch (error) {
-      console.error("[AgarEducation] failed to send player_left", error);
+      console.error("[AgarCell] failed to send player_left", error);
     }
   }
 
@@ -302,7 +424,7 @@ export default function AgarEducation() {
         },
       });
     } catch (error) {
-      console.error("[AgarEducation] failed to send player_dead", error);
+      console.error("[AgarCell] failed to send player_dead", error);
     }
   }
 
@@ -330,7 +452,7 @@ export default function AgarEducation() {
         },
       });
     } catch (error) {
-      console.error("[AgarEducation] failed to send player_blob_eaten", error);
+      console.error("[AgarCell] failed to send player_blob_eaten", error);
     }
   }
 
@@ -349,7 +471,7 @@ export default function AgarEducation() {
     }
 
     isAliveRef.current = false;
-    setEducationStartedValue(false);
+    setCellStartedValue(false);
     setStartCountdown(0);
     spikeLogicStartedLoggedRef.current = false;
     sendPlayerLeave("dead");
@@ -358,7 +480,11 @@ export default function AgarEducation() {
     setCurrentSkin(null);
     setDeathReason(`Session ended after collision with ${killerName}.`);
     setShowGate(true);
-    resetEducation({ includeObstacles: false });
+    setGuestMode(false);
+    setGuestName("");
+    setFaceExpression("serious");
+    prevScoreForFaceRef.current = 0;
+    resetCell({ includeObstacles: false });
   }
 
   function applyLocalBlobLoss(eatenBlobSnapshot = null) {
@@ -499,7 +625,7 @@ export default function AgarEducation() {
     return { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
   }
 
-  function resetEducation({ includeObstacles = true } = {}) {
+  function resetCell({ includeObstacles = true } = {}) {
     const canvas = canvasRef.current;
 
     if (!canvas) {
@@ -517,6 +643,11 @@ export default function AgarEducation() {
       warningZonesRef.current = [];
       botsRef.current = [];
     }
+    spikeImmunityUntilRef.current = 0;
+    ejectedFoodRef.current = [];
+    setArenaModeValue("main");
+    portalCooldownUntilRef.current = 0;
+    dangerWallHitAtRef.current = 0;
 
     // Pick a safe spawn that avoids spikes and other players.
     const { x: centerX, y: centerY } = findSafeSpawnPos();
@@ -556,19 +687,20 @@ export default function AgarEducation() {
     updateHudFromBlobs(blobsRef.current);
   }
 
-  function beginEducationRun(safeName) {
+  function beginCellRun(safeName) {
     leaveSentRef.current = false;
     playerNameRef.current = safeName;
     playerColorRef.current = colorFromId(`${sessionIdRef.current}-${safeName}`);
+    setPlayerColor(playerColorRef.current);
     isAliveRef.current = true;
     spikeLogicStartedLoggedRef.current = false;
     setUsername(safeName);
     setDeathReason("");
-    resetEducation({ includeObstacles: true });
+    resetCell({ includeObstacles: true });
 
-    setEducationStartedValue(true);
+    setCellStartedValue(true);
     setShowGate(false);
-    console.info("[AgarEducation] Education started", { safeName });
+    console.info("[AgarCell] Education started", { safeName });
     sendSpikeState(true);
 
     const channel = channelRef.current;
@@ -579,7 +711,7 @@ export default function AgarEducation() {
           username: safeName,
         });
       } catch (error) {
-        console.error("[AgarEducation] failed to track presence", error);
+        console.error("[AgarCell] failed to track presence", error);
       }
     }
 
@@ -593,7 +725,7 @@ export default function AgarEducation() {
       return;
     }
 
-    console.info("[AgarEducation] Start button clicked", { safeName });
+    console.info("[AgarCell] Start button clicked", { safeName });
 
     try {
       setUsername(safeName);
@@ -604,16 +736,16 @@ export default function AgarEducation() {
         clearInterval(startCountdownTimerRef.current);
       }
 
-      setEducationStartedValue(false);
+      setCellStartedValue(false);
       setStartCountdown(3);
-      resetEducation({ includeObstacles: false });
+      resetCell({ includeObstacles: false });
 
       startCountdownTimerRef.current = setInterval(() => {
         setStartCountdown((prev) => {
           if (prev <= 1) {
             clearInterval(startCountdownTimerRef.current);
             startCountdownTimerRef.current = null;
-            beginEducationRun(safeName);
+            beginCellRun(safeName);
             return 0;
           }
 
@@ -622,10 +754,10 @@ export default function AgarEducation() {
       }, 1000);
     } catch (error) {
       isAliveRef.current = false;
-      setEducationStartedValue(false);
+      setCellStartedValue(false);
       setStartCountdown(0);
-      console.error("[AgarEducation] failed to start education", error);
-      setDeathReason("Failed to start education. Please try again.");
+      console.error("[AgarCell] failed to start education", error);
+      setDeathReason("Failed to start cell. Please try again.");
       setShowGate(true);
     }
   }
@@ -669,7 +801,17 @@ export default function AgarEducation() {
     }
 
     function handleKeyDown(event) {
-      if (!isAliveRef.current || !educationStartedRef.current) {
+      if (!isAliveRef.current || !cellStartedRef.current) {
+        return;
+      }
+
+      if (arenaModeRef.current !== "main") {
+        return;
+      }
+
+      if (event.code === "KeyE") {
+        event.preventDefault();
+        ejectFood();
         return;
       }
 
@@ -744,9 +886,9 @@ export default function AgarEducation() {
       }
     }
 
-    function educationLoop() {
+    function cellLoop() {
       if (!rafReadyRef.current) {
-        animationRef.current = requestAnimationFrame(educationLoop);
+        animationRef.current = requestAnimationFrame(cellLoop);
         return;
       }
 
@@ -761,10 +903,10 @@ export default function AgarEducation() {
       let blobs = blobsRef.current;
       const now = Date.now();
 
-      if (educationStartedRef.current && isAliveRef.current) {
+      if (cellStartedRef.current && isAliveRef.current && arenaModeRef.current === "main") {
         if (!spikeLogicStartedLoggedRef.current) {
           spikeLogicStartedLoggedRef.current = true;
-          console.info("[AgarEducation] Spike logic started");
+          console.info("[AgarCell] Spike logic started");
         }
 
         const prevSpikeHash = spikesRef.current.map((s) => `${s.id}:${Math.round(s.x)},${Math.round(s.y)}`).join("|") + "/" + warningZonesRef.current.length;
@@ -785,121 +927,196 @@ export default function AgarEducation() {
         }
       }
 
-      if (isAliveRef.current && educationStartedRef.current) {
+      if (isAliveRef.current && cellStartedRef.current) {
         updateBlobMovement(blobs, mouseTargetRef.current);
         separateOverlappingBlobs(blobs);
 
-        keepBlobsOutsideWarnings(blobs, warningZonesRef.current);
+        if (arenaModeRef.current === "main") {
+          // Skip warning avoidance + collision while immune; immune player passes through freely
+          const isSpImmune = now < spikeImmunityUntilRef.current;
+          if (!isSpImmune) {
+            keepBlobsOutsideWarnings(blobs, warningZonesRef.current);
 
-        const hitSpike = findSpikeCollision(blobs, spikesRef.current);
-
-        if (hitSpike) {
-          const beforeCount = blobs.length;
-          const splitToMax = splitToMaxCells(blobs, createBlob, hitSpike);
-          const didSplit = splitToMax.length > beforeCount;
-          blobsRef.current = splitToMax;
-          blobs = splitToMax;
-
-          if (didSplit) {
-            mergeStateRef.current.nextMergeAt = Date.now() + getMergeDelayMs(splitToMax.length);
-            updateHudFromBlobs(splitToMax);
-            sendPlayerState(true);
-          }
-        }
-
-        const { gainedScore, remainingFood } = consumeFood(blobs, foodRef.current);
-        foodRef.current = replenishFood(
-          remainingFood,
-          WORLD_WIDTH,
-          WORLD_HEIGHT,
-          getRestrictedZones(spikesRef.current, warningZonesRef.current)
-        );
-
-        if (gainedScore > 0) {
-          setScoreValue(scoreRef.current + gainedScore);
-          updateHudFromBlobs(blobs);
-        }
-
-        // ── Bot AI update ────────────────────────────────────────────
-        {
-          const totalHumans = 1 + remotePlayersRef.current.size;
-          const maxActive   = Math.max(0, 10 - totalHumans);
-          const botResult   = updateBots({
-            bots: botsRef.current,
-            now,
-            food: foodRef.current,
-            maxActive,
-            localBlobs: blobs,
-            remotePlayers: remotePlayersRef.current,
-          });
-          botsRef.current = botResult.bots;
-          // Remove food consumed by bots
-          foodRef.current = foodRef.current.filter((_, i) => !botResult.consumedFoodIndices.has(i));
-
-          // Bot eats local blobs
-          const { updatedBots, nextLocalBlobs, botAteLocal, eatenLocalBlobs } = resolveBotVsLocal(botsRef.current, blobs);
-          if (botAteLocal) {
-            botsRef.current = updatedBots;
-            blobs = nextLocalBlobs;
-            blobsRef.current = nextLocalBlobs;
-            // Deduct score for each blob eaten by a bot
-            const penalty = eatenLocalBlobs.reduce(
-              (sum, b) => sum + Math.max(3, Math.round(b.radius * 0.6)), 0
-            );
-            setScoreValue(Math.max(0, scoreRef.current - penalty));
-            updateHudFromBlobs(nextLocalBlobs);
-            sendPlayerState(true);
-            if (!nextLocalBlobs.length) {
-              handleDefeat("a bot");
-              // RAF is always rescheduled after the try block; return safely here.
-              animationRef.current = requestAnimationFrame(educationLoop);
-              return;
+            const hitSpike = findSpikeCollision(blobs, spikesRef.current);
+            if (hitSpike && getCombinedRadius(blobs) >= 20) {
+              const beforeCount = blobs.length;
+              const splitToMax = splitToMaxCells(blobs, createBlob, hitSpike, 16);
+              const didSplit = splitToMax.length > beforeCount;
+              blobsRef.current = splitToMax;
+              blobs = splitToMax;
+              spikeImmunityUntilRef.current = now + 10_000;
+              if (didSplit) {
+                mergeStateRef.current.nextMergeAt = now + getMergeDelayMs(splitToMax.length);
+                updateHudFromBlobs(splitToMax);
+                sendPlayerState(true);
+              }
             }
           }
-        }
 
-        // ── PvP: local eats remote players and bot blobs ─────────────
-        const botRemotes = botsRef.current
-          .filter(b => b.active && b.blobs.length > 0)
-          .map(b => ({
-            sessionId: b.id,
-            id: b.id,
-            username: b.name,
-            color: b.color,
-            x: b.blobs[0].x,
-            y: b.blobs[0].y,
-            radius: b.blobs[0].radius,
-            blobs: b.blobs,
-            isBot: true,
-          }));
+          const { gainedScore, remainingFood } = consumeFood(blobs, foodRef.current);
+          foodRef.current = replenishFood(
+            remainingFood,
+            WORLD_WIDTH,
+            WORLD_HEIGHT,
+            getRestrictedZones(spikesRef.current, warningZonesRef.current)
+          );
 
-        resolvePvpCombat(blobs, [...remotePlayersRef.current.values(), ...botRemotes], {
-          onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
-            if (remote.isBot) {
-              botsRef.current = botsRef.current.map(bot =>
-                bot.id === remote.id
-                  ? { ...bot, blobs: bot.blobs.filter((_, i) => i !== remoteBlobIndex) }
-                  : bot
-              );
-              setScoreValue(scoreRef.current + Math.max(6, Math.round((remoteBlob?.radius || 0) * 0.9)));
-              updateHudFromBlobs(blobs);
-              sendPlayerState(true);
-              return;
-            }
-            const eatenBlob =
-              applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex, remoteBlob) || remoteBlob;
-            setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
+          if (gainedScore > 0) {
+            setScoreValue(scoreRef.current + gainedScore);
             updateHudFromBlobs(blobs);
-            sendPlayerBlobEaten(
-              remote.sessionId,
-              sessionIdRef.current,
-              playerNameRef.current || "Unknown",
-              eatenBlob
-            );
+          }
 
-            sendPlayerState(true);
-          },
-        });
+          if (blobs.some((blob) => isCircleInPortal(blob, MAIN_TO_LAB_PORTAL))) {
+            enterLabyrinth(now);
+            blobs = blobsRef.current;
+          }
+
+          // ── Ejected food: physics + local collection ─────────────────
+          ejectedFoodRef.current = ejectedFoodRef.current
+            .filter((p) => now - p.createdAt < 30_000)
+            .map((p) => ({
+              ...p,
+              x:  clamp(p.x + p.vx, p.radius, WORLD_WIDTH  - p.radius),
+              y:  clamp(p.y + p.vy, p.radius, WORLD_HEIGHT - p.radius),
+              vx: p.vx * 0.92,
+              vy: p.vy * 0.92,
+            }));
+
+          if (ejectedFoodRef.current.length) {
+            let gained = 0;
+            const eaten = new Set();
+            for (const piece of ejectedFoodRef.current) {
+              for (const blob of blobs) {
+                if (!eaten.has(piece.id) && blob.radius >= 3 &&
+                    Math.hypot(blob.x - piece.x, blob.y - piece.y) < blob.radius) {
+                  eaten.add(piece.id);
+                  gained += piece.value;
+                }
+              }
+            }
+            if (eaten.size) {
+              ejectedFoodRef.current = ejectedFoodRef.current.filter((p) => !eaten.has(p.id));
+              if (gained > 0) setScoreValue(scoreRef.current + gained);
+            }
+          }
+
+          // ── Bot AI update ────────────────────────────────────────────
+          {
+            const totalHumans = 1 + remotePlayersRef.current.size;
+            const maxActive   = Math.max(0, 10 - totalHumans);
+            const botResult   = updateBots({
+              bots: botsRef.current,
+              now,
+              food: foodRef.current,
+              maxActive,
+              localBlobs: blobs,
+              remotePlayers: remotePlayersRef.current,
+            });
+            botsRef.current = botResult.bots;
+            // Remove food consumed by bots
+            foodRef.current = foodRef.current.filter((_, i) => !botResult.consumedFoodIndices.has(i));
+
+            // Bot eats local blobs
+            const { updatedBots, nextLocalBlobs, botAteLocal, eatenLocalBlobs } = resolveBotVsLocal(botsRef.current, blobs);
+            if (botAteLocal) {
+              botsRef.current = updatedBots;
+              blobs = nextLocalBlobs;
+              blobsRef.current = nextLocalBlobs;
+              // Deduct score for each blob eaten by a bot
+              const penalty = eatenLocalBlobs.reduce(
+                (sum, b) => sum + Math.max(3, Math.round(b.radius * 0.6)), 0
+              );
+              setScoreValue(Math.max(0, scoreRef.current - penalty));
+              updateHudFromBlobs(nextLocalBlobs);
+              sendPlayerState(true);
+              if (!nextLocalBlobs.length) {
+                handleDefeat("a bot");
+                // RAF is always rescheduled after the try block; return safely here.
+                animationRef.current = requestAnimationFrame(cellLoop);
+                return;
+              }
+            }
+          }
+
+          // ── PvP: local eats remote players and bot blobs ─────────────
+          const botRemotes = botsRef.current
+            .filter(b => b.active && b.blobs.length > 0)
+            .map(b => ({
+              sessionId: b.id,
+              id: b.id,
+              username: b.name,
+              color: b.color,
+              x: b.blobs[0].x,
+              y: b.blobs[0].y,
+              radius: b.blobs[0].radius,
+              blobs: b.blobs,
+              isBot: true,
+            }));
+
+          resolvePvpCombat(blobs, [...remotePlayersRef.current.values(), ...botRemotes], {
+            onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
+              if (remote.isBot) {
+                botsRef.current = botsRef.current.map(bot =>
+                  bot.id === remote.id
+                    ? { ...bot, blobs: bot.blobs.filter((_, i) => i !== remoteBlobIndex) }
+                    : bot
+                );
+                setScoreValue(scoreRef.current + Math.max(6, Math.round((remoteBlob?.radius || 0) * 0.9)));
+                updateHudFromBlobs(blobs);
+                sendPlayerState(true);
+                return;
+              }
+              const eatenBlob =
+                applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex, remoteBlob) || remoteBlob;
+              setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
+              updateHudFromBlobs(blobs);
+              sendPlayerBlobEaten(
+                remote.sessionId,
+                sessionIdRef.current,
+                playerNameRef.current || "Unknown",
+                eatenBlob
+              );
+
+              sendPlayerState(true);
+            },
+          });
+        } else {
+          const labyrinth = labyrinthRef.current;
+          const { killingWallHits, spikeHits } = applyLabyrinthCollisions(blobs, labyrinth, now);
+
+          if (killingWallHits > 0 && now - dangerWallHitAtRef.current >= 600) {
+            dangerWallHitAtRef.current = now;
+            const totalPenalty = killingWallHits * KILLING_WALL_TOUCH_PENALTY;
+            const nextScore = Math.max(0, scoreRef.current - totalPenalty);
+            setScoreValue(nextScore);
+            if (nextScore <= 0) {
+              handleDefeat("a tunnel killing wall");
+              animationRef.current = requestAnimationFrame(cellLoop);
+              return;
+            }
+          }
+
+          if (spikeHits > 0 && now - tunnelSpikeHitAtRef.current >= 180) {
+            tunnelSpikeHitAtRef.current = now;
+            const totalPenalty = spikeHits * TUNNEL_SPIKE_TOUCH_PENALTY;
+            const nextScore = Math.max(0, scoreRef.current - totalPenalty);
+            setScoreValue(nextScore);
+            if (nextScore <= 0) {
+              handleDefeat("tunnel spikes");
+              animationRef.current = requestAnimationFrame(cellLoop);
+              return;
+            }
+          }
+
+          const touchedExit = labyrinth.returnPortals.some((portal) =>
+            blobs.some((blob) => isCircleInPortal(blob, portal))
+          );
+
+          if (touchedExit) {
+            returnToMainArena(now);
+            blobs = blobsRef.current;
+          }
+        }
       }
 
       pruneStaleRemotePlayers();
@@ -931,21 +1148,44 @@ export default function AgarEducation() {
       ctx.lineWidth = 5;
       ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
-      if (educationStartedRef.current) {
-        drawWarningZones(ctx, warningZonesRef.current, now);
-        drawSpikeBalls(ctx, spikesRef.current);
+      if (arenaModeRef.current === "main") {
+        if (cellStartedRef.current) {
+          drawWarningZones(ctx, warningZonesRef.current, now);
+          drawSpikeBalls(ctx, spikesRef.current);
+        }
+
+        for (const point of foodRef.current) {
+          drawCircle(ctx, point.x, point.y, point.radius, point.color);
+        }
+
+        drawPortal(ctx, MAIN_TO_LAB_PORTAL, now, "Tunnel");
+
+        // ── Ejected food: glowing blue circles ──
+        if (ejectedFoodRef.current.length) {
+          ctx.save();
+          ctx.shadowColor = "#60a5fa";
+          ctx.shadowBlur  = 10;
+          for (const piece of ejectedFoodRef.current) {
+            ctx.beginPath();
+            ctx.arc(piece.x, piece.y, piece.radius, 0, Math.PI * 2);
+            ctx.fillStyle = "#3b82f6";
+            ctx.fill();
+          }
+          ctx.shadowBlur = 0;
+          ctx.restore();
+        }
+      } else {
+        drawLabyrinthArena(ctx, labyrinthRef.current, now);
       }
 
-      for (const point of foodRef.current) {
-        drawCircle(ctx, point.x, point.y, point.radius, point.color);
-      }
+      if (arenaModeRef.current === "main") {
+        for (const remote of remotePlayersRef.current.values()) {
+          drawRemotePlayer(ctx, remote);
+        }
 
-      for (const remote of remotePlayersRef.current.values()) {
-        drawRemotePlayer(ctx, remote);
-      }
-
-      for (const bot of botsRef.current) {
-        if (bot.active && bot.blobs.length) drawBotPlayer(ctx, bot, now);
+        for (const bot of botsRef.current) {
+          if (bot.active && bot.blobs.length) drawBotPlayer(ctx, bot, now);
+        }
       }
 
       for (const blob of blobs) {
@@ -1003,10 +1243,10 @@ export default function AgarEducation() {
 
       } catch (err) {
         // Never let a single bad frame kill the animation loop.
-        console.error("[educationLoop] uncaught frame error — loop continues", err);
+        console.error("[cellLoop] uncaught frame error — loop continues", err);
       }
 
-      animationRef.current = requestAnimationFrame(educationLoop);
+      animationRef.current = requestAnimationFrame(cellLoop);
     }
 
     async function setupRealtime() {
@@ -1163,7 +1403,7 @@ export default function AgarEducation() {
             // Auto-reconnect after a short back-off so broadcasts resume.
             setTimeout(() => {
               if (isDisposed) return;
-              console.info("[AgarEducation] Channel dropped (", status, "), reconnecting…");
+              console.info("[AgarCell] Channel dropped (", status, "), reconnecting…");
               try { channelRef.current?.unsubscribe(); } catch (_) {}
               channelRef.current = null;
               setupRealtime();
@@ -1188,8 +1428,8 @@ export default function AgarEducation() {
     }
 
     resizeCanvas();
-    console.info("[AgarEducation] App mounted");
-    resetEducation({ includeObstacles: false });
+    console.info("[AgarCell] App mounted");
+    resetCell({ includeObstacles: false });
     setupRealtime();
 
     window.addEventListener("resize", resizeCanvas);
@@ -1198,7 +1438,7 @@ export default function AgarEducation() {
     window.addEventListener("beforeunload", handleBeforeUnload);
     window.addEventListener("pagehide", handlePageHide);
 
-    educationLoop();
+    cellLoop();
 
     return () => {
       if (startCountdownTimerRef.current) {
@@ -1225,15 +1465,18 @@ export default function AgarEducation() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4">
+    <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4" data-arena={arenaMode}>
       <div className="mx-auto max-w-[1600px] space-y-3">
-        <EducationHeader
+        <CellHeader
           score={score}
           size={size}
           parts={parts}
           onlinePlayers={onlinePlayers}
           leaderboardPlayers={leaderboardPlayers}
           currentSkin={currentSkin}
+          playerColor={playerColor}
+          faceExpression={faceExpression}
+          username={username}
           onSelectSkin={(skinId) => {
             currentSkinRef.current = skinId;
             setCurrentSkin(skinId);
@@ -1241,30 +1484,100 @@ export default function AgarEducation() {
             if (def) preloadSkin(def.id, def.src);
           }}
         />
-        <EducationArena
-          canvasRef={canvasRef}
-          isActive={educationStarted}
-        />
-        <EducationFooter
-          onRestart={() => resetEducation({ includeObstacles: educationStartedRef.current })}
-          username={username}
-          connectionStatus={connectionStatus}
-        />
+
+        {/* Arena wrapper — blurred + overlay when gate is open */}
+        <div className="relative">
+          <div className={showGate ? "pointer-events-none select-none blur-sm" : ""}>
+            <CellArena canvasRef={canvasRef} isActive={cellStarted} />
+          </div>
+
+          {showGate && (
+            <div className="absolute inset-0 z-40 flex items-center justify-center p-4">
+              <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900/95 p-8 shadow-2xl backdrop-blur-sm">
+                {deathReason ? (
+                  <>
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className="text-2xl">💀</span>
+                      <h2 className="text-xl font-bold text-white">Session Ended</h2>
+                    </div>
+                    <p className="mb-6 text-sm text-slate-400">{deathReason}</p>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="mb-1 text-2xl font-bold text-white">Join the Arena</h2>
+                    <p className="mb-6 text-sm text-slate-400">
+                      Eat others, grow bigger, survive.
+                    </p>
+                  </>
+                )}
+
+                {guestMode ? (
+                  /* ── Guest username form ── */
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const name = guestName.trim().slice(0, 18);
+                      if (name) startRunWithUsername(name);
+                    }}
+                    className="space-y-3"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setGuestMode(false)}
+                      className="mb-2 flex items-center gap-1 text-xs text-slate-500 transition hover:text-slate-300"
+                    >
+                      ← Back
+                    </button>
+                    <label className="block text-sm font-medium text-slate-300">
+                      Choose a name
+                    </label>
+                    <input
+                      autoFocus
+                      type="text"
+                      maxLength={18}
+                      placeholder="Your name…"
+                      value={guestName}
+                      onChange={(e) => setGuestName(e.target.value)}
+                      className="w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!guestName.trim()}
+                      className="w-full rounded-xl bg-emerald-500 py-3 font-bold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Start Playing →
+                    </button>
+                  </form>
+                ) : (
+                  /* ── Initial choice ── */
+                  <div className="space-y-3">
+                    <button
+                      className="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 py-3.5 font-bold text-slate-950 shadow-lg shadow-emerald-900/40 transition-all hover:from-emerald-400 hover:to-cyan-400"
+                    >
+                      Log in / Sign up
+                    </button>
+
+                    <div className="flex items-center gap-3 text-slate-600">
+                      <span className="flex-1 border-t border-slate-700" />
+                      <span className="text-xs uppercase tracking-wide">or</span>
+                      <span className="flex-1 border-t border-slate-700" />
+                    </div>
+
+                    <button
+                      onClick={() => setGuestMode(true)}
+                      className="w-full rounded-xl border border-slate-600 py-3 text-sm font-medium text-slate-300 transition-colors hover:border-slate-500 hover:bg-slate-800 hover:text-white"
+                    >
+                      Play without registration
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
-      <UsernameGate
-        key={`${showGate ? "open" : "closed"}-${username}-${deathReason}`}
-        open={showGate}
-        defaultName={username}
-        title={deathReason ? "Session Ended" : "Join Shared Simulation"}
-        message={
-          deathReason ||
-          "Enter your username to start. Other learners can join the same simulation live."
-        }
-        onSubmit={startRunWithUsername}
-      />
-
-      {!showGate && !educationStarted && startCountdown > 0 ? (
+      {!showGate && !cellStarted && startCountdown > 0 ? (
         <div className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center">
           <div className="rounded-2xl border border-slate-700 bg-slate-900/90 px-6 py-5 text-center shadow-xl backdrop-blur-sm">
             <p className="text-sm uppercase tracking-wide text-slate-300">Starting In</p>

@@ -1,12 +1,11 @@
 import {
-  MAX_BLOBS,
   MIN_SPLIT_RADIUS,
   PVP_OVERLAP_RATIO,
   PVP_SIZE_ADVANTAGE,
   WORLD_HEIGHT,
   WORLD_WIDTH,
-} from "./constants";
-import { blobArea, clamp, radiusFromArea } from "./math";
+} from "@/components/cell/logic/constants";
+import { blobArea, clamp, radiusFromArea } from "@/components/cell/logic/math";
 
 export function canEatCircle(biggerRadius, smallerRadius, distance) {
   if (biggerRadius <= smallerRadius * PVP_SIZE_ADVANTAGE) {
@@ -18,20 +17,15 @@ export function canEatCircle(biggerRadius, smallerRadius, distance) {
 }
 
 export function splitAndJump(blobs, mouseTarget, createBlob) {
-  if (!blobs.length || blobs.length >= MAX_BLOBS) {
+  if (!blobs.length) {
     return blobs;
   }
 
   const next = [];
 
   for (const blob of blobs) {
-    if (next.length >= MAX_BLOBS) {
-      next.push(blob);
-      continue;
-    }
-
-    const canSplit =
-      blob.radius >= MIN_SPLIT_RADIUS * Math.sqrt(2) && next.length + 2 <= MAX_BLOBS;
+    // Only split if radius strictly above the minimum — children will be below it and won't re-split
+    const canSplit = blob.radius > MIN_SPLIT_RADIUS;
 
     if (!canSplit) {
       next.push(blob);

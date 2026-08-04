@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import SkinPicker from "@/components/education/SkinPicker";
+import Link from "next/link";
+import PlayerCard from "@/components/layout/PlayerCard";
 
 function PlayerRow({ rank, player }) {
   if (!player) {
@@ -29,7 +30,7 @@ function PlayerRow({ rank, player }) {
   );
 }
 
-export default function EducationHeader({
+export default function CellHeader({
   score,
   size,
   parts,
@@ -37,6 +38,9 @@ export default function EducationHeader({
   leaderboardPlayers = [],
   currentSkin = null,
   onSelectSkin,
+  playerColor = "#22c55e",
+  username = "",
+  faceExpression = "serious",
 }) {
   const [showAll, setShowAll] = useState(false);
 
@@ -44,13 +48,6 @@ export default function EducationHeader({
   // Always-visible: top 6 split into two columns of 3
   const left  = [sorted[0], sorted[1], sorted[2]];
   const right = [sorted[3], sorted[4], sorted[5]];
-
-  const cards = [
-    { label: "Score",  value: score },
-    { label: "Size",   value: size  },
-    { label: "Parts",  value: parts },
-    { label: "Online", value: onlinePlayers },
-  ];
 
   return (
     <div className="relative rounded-2xl bg-slate-900 p-4 shadow-xl">
@@ -64,11 +61,17 @@ export default function EducationHeader({
           </p>
         </div>
 
-        {/* ── Skins button ── */}
-        <SkinPicker
-          score={score}
+        {/* ── Player card + stats ── */}
+        <PlayerCard
+          playerColor={playerColor}
           currentSkin={currentSkin}
           onSelectSkin={onSelectSkin}
+          score={score}
+          size={size}
+          parts={parts}
+          onlinePlayers={onlinePlayers}
+          username={username}
+          faceExpression={faceExpression}
         />
 
         {/* ── Leaderboard box ── */}
@@ -101,18 +104,13 @@ export default function EducationHeader({
           </div>
         </div>
 
-        {/* ── Stat cards ── */}
-        <div className="flex shrink-0 gap-2 md:gap-3">
-          {cards.map((card) => (
-            <div
-              key={card.label}
-              className="rounded-xl bg-slate-800 px-4 py-3 text-center"
-            >
-              <div className="text-xs text-slate-400">{card.label}</div>
-              <div className="text-xl font-bold">{card.value}</div>
-            </div>
-          ))}
-        </div>
+        {/* ── About button ── */}
+        <Link
+          href="/about"
+          className="shrink-0 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-5 py-3 text-sm font-bold text-slate-950 shadow-lg shadow-emerald-900/40 transition-all hover:from-emerald-400 hover:to-cyan-400 hover:shadow-emerald-800/60"
+        >
+          About this project ↗
+        </Link>
       </div>
 
       {/* ── Full leaderboard dropdown (overlays the arena) ── */}
