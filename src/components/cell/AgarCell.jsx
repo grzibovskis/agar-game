@@ -344,7 +344,7 @@ export default function AgarCell() {
     }
   }
 
-  function sendPlayerDeath(victimSessionId, killerSessionId, killerName) {
+  function sendParticipantDisconnected(victimSessionId, sourceSessionId, sourceName) {
     const channel = channelRef.current;
 
     if (!channel) {
@@ -354,44 +354,44 @@ export default function AgarCell() {
     try {
       channel.send({
         type: "broadcast",
-        event: "player_dead",
+        event: "participant_inactive",
         payload: {
           victimSessionId,
-          killerSessionId,
-          killerName,
+          sourceSessionId,
+          sourceName,
           at: Date.now(),
         },
       });
     } catch (error) {
-      console.error("[AgarCell] failed to send player_dead", error);
+      console.error("[AgarCell] failed to send participant_inactive", error);
     }
   }
 
-  function sendPlayerBlobEaten(victimSessionId, killerSessionId, killerName, eatenBlob) {
+  function sendParticipantStateReduced(victimSessionId, sourceSessionId, sourceName, affectedBlob) {
     const channel = channelRef.current;
 
-    if (!channel || !eatenBlob) {
+    if (!channel || !affectedBlob) {
       return;
     }
 
     try {
       channel.send({
         type: "broadcast",
-        event: "player_blob_eaten",
+        event: "participant_state_reduced",
         payload: {
           victimSessionId,
-          killerSessionId,
-          killerName,
+          sourceSessionId,
+          sourceName,
           blob: {
-            x: round1(eatenBlob.x),
-            y: round1(eatenBlob.y),
-            radius: round1(eatenBlob.radius),
+            x: round1(affectedBlob.x),
+            y: round1(affectedBlob.y),
+            radius: round1(affectedBlob.radius),
           },
           at: Date.now(),
         },
       });
     } catch (error) {
-      console.error("[AgarCell] failed to send player_blob_eaten", error);
+      console.error("[AgarCell] failed to send participant_state_reduced", error);
     }
   }
 
@@ -404,7 +404,7 @@ export default function AgarCell() {
     }
   }
 
-  function handleDefeat(killerName = "Another player") {
+  function handleSessionEnd(sourceName = "Another participant") {
     if (!isAliveRef.current) {
       return;
     }
@@ -417,7 +417,7 @@ export default function AgarCell() {
     setLeaderboardPlayers((prev) => prev.filter((p) => !p.isLocal));
     currentSkinRef.current = null;
     setCurrentSkin(null);
-    setDeathReason(`Session ended after collision with ${killerName}.`);
+    setDeathReason(`Session ended after interaction with ${sourceName}.`);
     setShowGate(true);
     setGuestMode(false);
     setGuestName("");
@@ -956,7 +956,7 @@ export default function AgarCell() {
             updateHudFromBlobs(nextLocalBlobs);
             sendPlayerState(true);
             if (!nextLocalBlobs.length) {
-              handleDefeat("a bot");
+                handleSessionEnd("an automated participant");
               // RAF is always rescheduled after the try block; return safely here.
               animationRef.current = requestAnimationFrame(cellLoop);
               return;
@@ -964,7 +964,7 @@ export default function AgarCell() {
           }
         }
 
-        // ── PvP: local eats remote players and bot blobs ─────────────
+        // ── Shared-state resolution across remote and automated participants ──
         const botRemotes = botsRef.current
           .filter(b => b.active && b.blobs.length > 0)
           .map(b => ({
@@ -996,7 +996,7 @@ export default function AgarCell() {
               applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex, remoteBlob) || remoteBlob;
             setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
             updateHudFromBlobs(blobs);
-            sendPlayerBlobEaten(
+            sendParticipantStateReduced(
               remote.sessionId,
               sessionIdRef.current,
               playerNameRef.current || "Unknown",
@@ -1206,7 +1206,7 @@ export default function AgarCell() {
 
             setOnlinePlayers(remotePlayersRef.current.size + 1);
           })
-          .on("broadcast", { event: "player_dead" }, ({ payload }) => {
+          .on("broadcast", { event: "participant_inactive" }, ({ payload }) => {
             if (!payload) {
               return;
             }
@@ -1214,10 +1214,10 @@ export default function AgarCell() {
             clearRemotePlayer(payload.victimSessionId);
 
             if (payload.victimSessionId === sessionIdRef.current) {
-              handleDefeat(payload.killerName || "Another player");
+              handleSessionEnd(payload.sourceName || "Another participant");
             }
           })
-          .on("broadcast", { event: "player_blob_eaten" }, ({ payload }) => {
+          .on("broadcast", { event: "participant_state_reduced" }, ({ payload }) => {
             if (!payload || payload.victimSessionId !== sessionIdRef.current || !isAliveRef.current) {
               return;
             }
@@ -1226,12 +1226,12 @@ export default function AgarCell() {
             applyLocalBlobLoss(payload.blob);
 
             if (localCountBefore <= 1 || !blobsRef.current.length) {
-              sendPlayerDeath(
+              sendParticipantDisconnected(
                 sessionIdRef.current,
-                payload.killerSessionId,
-                payload.killerName || "Another player"
+                payload.sourceSessionId,
+                payload.sourceName || "Another participant"
               );
-              handleDefeat(payload.killerName || "Another player");
+              handleSessionEnd(payload.sourceName || "Another participant");
             }
           })
           .on("broadcast", { event: "player_left" }, ({ payload }) => {
@@ -1385,9 +1385,9 @@ export default function AgarCell() {
                   </>
                 ) : (
                   <>
-                    <h2 className="mb-1 text-2xl font-bold text-white">Join the Arena</h2>
+                    <h2 className="mb-1 text-2xl font-bold text-white">Join the Session</h2>
                     <p className="mb-6 text-sm text-slate-400">
-                      Eat others, grow bigger, survive.
+                      Connect, explore, and interact with the shared canvas.
                     </p>
                   </>
                 )}
@@ -1426,7 +1426,7 @@ export default function AgarCell() {
                       disabled={!guestName.trim()}
                       className="w-full rounded-xl bg-emerald-500 py-3 font-bold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      Start Playing →
+                      Start Session →
                     </button>
                   </form>
                 ) : (
@@ -1448,7 +1448,7 @@ export default function AgarCell() {
                       onClick={() => setGuestMode(true)}
                       className="w-full rounded-xl border border-slate-600 py-3 text-sm font-medium text-slate-300 transition-colors hover:border-slate-500 hover:bg-slate-800 hover:text-white"
                     >
-                      Play without registration
+                      Continue without registration
                     </button>
                   </div>
                 )}
