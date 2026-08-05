@@ -99,17 +99,16 @@ function PlayerCircle({ color, faceExpression = "serious" }) {
 
     draw();
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [color]);
 
   return <canvas ref={canvasRef} aria-hidden="true" />;
 }
 
 const STATS = [
-  { key: "score",  label: "Score"  },
-  { key: "size",   label: "Size"   },
-  { key: "parts",  label: "Parts"  },
-  { key: "online", label: "Online" },
+  { key: "score",  label: "Progress"   },
+  { key: "size",   label: "Scale"      },
+  { key: "parts",  label: "Segments"   },
+  { key: "online", label: "Connected"  },
 ];
 
 export default function PlayerCard({
@@ -153,7 +152,7 @@ export default function PlayerCard({
       <div className="relative">
         <button
           onClick={handleToggle}
-          aria-label="Player options"
+          aria-label="Profile options"
           className="flex flex-col items-center gap-1.5 rounded-2xl border border-slate-700 bg-slate-800/80 px-3 py-2.5 shadow-inner transition-all hover:brightness-110"
         >
           <PlayerCircle color={playerColor} faceExpression={faceExpression} />
@@ -161,7 +160,7 @@ export default function PlayerCard({
             className="max-w-[96px] truncate text-center text-[11px] font-semibold tracking-wide text-white"
             style={{ textShadow: "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000" }}
           >
-            {username || "Guest"}
+            {username || "Participant"}
           </span>
         </button>
 
@@ -172,7 +171,7 @@ export default function PlayerCard({
               onClick={() => setSkinsOpen((v) => !v)}
               className="flex w-full items-center justify-between rounded-t-xl px-4 py-3 text-sm font-medium text-slate-300 transition hover:bg-slate-800 hover:text-white"
             >
-              <span className="flex items-center gap-2"><span className="text-base">🎨</span> Skins</span>
+              <span className="flex items-center gap-2"><span className="text-base">🎨</span> Appearance</span>
               <span className="text-[10px] text-slate-500">{skinsOpen ? "▲" : "▼"}</span>
             </button>
 

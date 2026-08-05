@@ -11,7 +11,6 @@ export default function UsernameGate({
 }) {
   const [name, setName] = useState(defaultName);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showConfirmPopup, setShowConfirmPopup] = useState(false);
 
   const trimmedName = name.trim();
   const isDisabled = !trimmedName || isSubmitting;
@@ -21,15 +20,14 @@ export default function UsernameGate({
       username: name,
       isSubmitting,
       disabled: isDisabled,
-      showConfirmPopup,
     });
-  }, [name, isSubmitting, isDisabled, showConfirmPopup]);
+  }, [name, isSubmitting, isDisabled]);
 
   if (!open) {
     return null;
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
 
     const trimmed = name.trim().slice(0, 18);
@@ -44,32 +42,16 @@ export default function UsernameGate({
       return;
     }
 
-    setShowConfirmPopup(true);
-  }
-
-  async function handleConfirmStart() {
-    const trimmed = name.trim().slice(0, 18);
-
-    if (!trimmed || isSubmitting || typeof onSubmit !== "function") {
-      return;
-    }
-
     setIsSubmitting(true);
 
     try {
-      console.info("[UsernameGate] Confirmed start", { username: trimmed });
+      console.info("[UsernameGate] Starting session", { username: trimmed });
       await Promise.resolve(onSubmit(trimmed));
     } catch (error) {
       console.warn("[UsernameGate] realtime/Supabase start warning", error);
     } finally {
       setIsSubmitting(false);
-      setShowConfirmPopup(false);
     }
-  }
-
-  function handleCancelStart() {
-    console.info("[UsernameGate] Start cancelled");
-    setShowConfirmPopup(false);
   }
 
   return (
@@ -80,7 +62,7 @@ export default function UsernameGate({
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-3">
           <label className="block text-sm text-slate-300" htmlFor="username">
-            Username
+            Display name
           </label>
 
           <input
@@ -88,7 +70,7 @@ export default function UsernameGate({
             value={name}
             maxLength={18}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Type your player name"
+            placeholder="Type your name"
             className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-white outline-none ring-0 placeholder:text-slate-400 focus:border-emerald-400"
             autoFocus
           />
@@ -98,48 +80,10 @@ export default function UsernameGate({
             className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={isDisabled}
           >
-            {isSubmitting ? "Starting..." : "Let's eat!"}
+            {isSubmitting ? "Starting..." : "Start Arena"}
           </button>
         </form>
       </div>
-
-      {showConfirmPopup && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-4 pointer-events-auto">
-          <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
-            <h3 className="text-xl font-bold text-white">
-              Ready to start session?
-            </h3>
-
-            <p className="mt-2 text-sm text-slate-300">
-              Are you sure you want to start the session as{" "}
-              <span className="font-semibold text-emerald-300">
-                {trimmedName}
-              </span>
-              ?
-            </p>
-
-            <div className="mt-6 flex gap-3">
-              <button
-                type="button"
-                onClick={handleCancelStart}
-                disabled={isSubmitting}
-                className="w-full rounded-xl border border-slate-600 px-4 py-3 font-semibold text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                No
-              </button>
-
-              <button
-                type="button"
-                onClick={handleConfirmStart}
-                disabled={isSubmitting}
-                className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSubmitting ? "Starting..." : "Yes"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

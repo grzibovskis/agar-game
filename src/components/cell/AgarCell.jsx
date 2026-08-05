@@ -125,7 +125,6 @@ export default function AgarCell() {
   const [size, setSize] = useState(22);
   const [parts, setParts] = useState(1);
   const [showGate, setShowGate] = useState(true);
-  const [guestMode, setGuestMode] = useState(false);
   const [guestName, setGuestName] = useState("");
   const [cellStarted, setCellStarted] = useState(false);
   const [deathReason, setDeathReason] = useState("");
@@ -419,7 +418,6 @@ export default function AgarCell() {
     setCurrentSkin(null);
     setDeathReason(`Session ended after interaction with ${sourceName}.`);
     setShowGate(true);
-    setGuestMode(false);
     setGuestName("");
     setFaceExpression("serious");
     prevScoreForFaceRef.current = 0;
@@ -1385,73 +1383,41 @@ export default function AgarCell() {
                   </>
                 ) : (
                   <>
-                    <h2 className="mb-1 text-2xl font-bold text-white">Join the Session</h2>
+                    <h2 className="mb-1 text-2xl font-bold text-white">Start Arena Session</h2>
                     <p className="mb-6 text-sm text-slate-400">
-                      Connect, explore, and interact with the shared canvas.
+                      Enter a display name to continue.
                     </p>
                   </>
                 )}
 
-                {guestMode ? (
-                  /* ── Guest username form ── */
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const name = guestName.trim().slice(0, 18);
-                      if (name) startRunWithUsername(name);
-                    }}
-                    className="space-y-3"
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const name = guestName.trim().slice(0, 18);
+                    if (name) startRunWithUsername(name);
+                  }}
+                  className="space-y-3"
+                >
+                  <label className="block text-sm font-medium text-slate-300">
+                    Display name
+                  </label>
+                  <input
+                    autoFocus
+                    type="text"
+                    maxLength={18}
+                    placeholder="Type your name"
+                    value={guestName}
+                    onChange={(e) => setGuestName(e.target.value)}
+                    className="w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!guestName.trim()}
+                    className="w-full rounded-xl bg-emerald-500 py-3 font-bold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <button
-                      type="button"
-                      onClick={() => setGuestMode(false)}
-                      className="mb-2 flex items-center gap-1 text-xs text-slate-500 transition hover:text-slate-300"
-                    >
-                      ← Back
-                    </button>
-                    <label className="block text-sm font-medium text-slate-300">
-                      Choose a name
-                    </label>
-                    <input
-                      autoFocus
-                      type="text"
-                      maxLength={18}
-                      placeholder="Your name…"
-                      value={guestName}
-                      onChange={(e) => setGuestName(e.target.value)}
-                      className="w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!guestName.trim()}
-                      className="w-full rounded-xl bg-emerald-500 py-3 font-bold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      Start Session →
-                    </button>
-                  </form>
-                ) : (
-                  /* ── Initial choice ── */
-                  <div className="space-y-3">
-                    <button
-                      className="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 py-3.5 font-bold text-slate-950 shadow-lg shadow-emerald-900/40 transition-all hover:from-emerald-400 hover:to-cyan-400"
-                    >
-                      Log in / Sign up
-                    </button>
-
-                    <div className="flex items-center gap-3 text-slate-600">
-                      <span className="flex-1 border-t border-slate-700" />
-                      <span className="text-xs uppercase tracking-wide">or</span>
-                      <span className="flex-1 border-t border-slate-700" />
-                    </div>
-
-                    <button
-                      onClick={() => setGuestMode(true)}
-                      className="w-full rounded-xl border border-slate-600 py-3 text-sm font-medium text-slate-300 transition-colors hover:border-slate-500 hover:bg-slate-800 hover:text-white"
-                    >
-                      Continue without registration
-                    </button>
-                  </div>
-                )}
+                    Start Arena
+                  </button>
+                </form>
               </div>
             </div>
           )}
