@@ -1,5 +1,5 @@
-export const WORLD_WIDTH = 4200;
-export const WORLD_HEIGHT = 4200;
+export const WORLD_WIDTH = 8400;
+export const WORLD_HEIGHT = 8400;
 export const FOOD_TARGET = 260;
 export const GRID_SIZE = 90;
 export const MERGE_INTERVAL_MS = 60_000;

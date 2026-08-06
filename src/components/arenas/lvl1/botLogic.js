@@ -1,4 +1,5 @@
 import { WORLD_WIDTH, WORLD_HEIGHT } from "@/components/cell/logic/constants";
+import { getCombinedRadius, growBlobWithinGroup } from "@/components/cell/logic/blobLogic";
 import { blobArea, radiusFromArea } from "@/components/cell/logic/math";
 import { canEatCircle } from "./movementAttackLogic";
 
@@ -43,10 +44,6 @@ function centroid(blobs) {
     x: blobs.reduce((s, b) => s + b.x * blobArea(b.radius), 0) / ta,
     y: blobs.reduce((s, b) => s + b.y * blobArea(b.radius), 0) / ta,
   };
-}
-
-function combinedRadius(blobs) {
-  return radiusFromArea(blobs.reduce((s, b) => s + blobArea(b.radius), 0));
 }
 
 // ─── Create ───────────────────────────────────────────────────────────────────
@@ -169,7 +166,7 @@ export function updateBots({ bots, now, food, maxActive, localBlobs, remotePlaye
     }
 
     const c  = centroid(b.blobs);
-    const cr = combinedRadius(b.blobs);
+    const cr = getCombinedRadius(b.blobs);
 
     // State machine
     let { state, stateEndAt, wanderTarget, attackTargetId } = b;
@@ -213,7 +210,7 @@ export function updateBots({ bots, now, food, maxActive, localBlobs, remotePlaye
       for (const blob of blobs) {
         if (d2(blob.x, blob.y, f.x, f.y) < blob.radius) {
           consumedFoodIndices.add(fi);
-          blob.radius = radiusFromArea(blobArea(blob.radius) + blobArea(f.radius) * 0.6);
+          growBlobWithinGroup(blobs, blob, blobArea(f.radius) * 0.6);
           score += 1;
           break;
         }
@@ -251,7 +248,7 @@ export function resolveBotVsLocal(bots, localBlobs) {
         const lb = localArr[li];
         const dist = d2(bb.x, bb.y, lb.x, lb.y);
         if (canEatCircle(bb.radius, lb.radius, dist)) {
-          bb.radius = radiusFromArea(blobArea(bb.radius) + blobArea(lb.radius) * 0.9);
+          growBlobWithinGroup(newBlobs, bb, blobArea(lb.radius) * 0.9);
           scoreGain += Math.max(6, Math.round(lb.radius * 0.9));
           eatenLocalBlobs.push(lb);
           localArr.splice(li, 1);

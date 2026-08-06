@@ -59,13 +59,13 @@ export function replenishFood(food, worldWidth, worldHeight, restrictedZones = [
   return nextFood;
 }
 
-export function drawGrid(ctx, camera, width, height, gridSize) {
+export function drawGrid(ctx, camera, width, height, gridSize, gridColor = "rgba(148, 163, 184, 0.2)") {
   const left = camera.x - width / 2;
   const top = camera.y - height / 2;
   const right = left + width;
   const bottom = top + height;
 
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.2)";
+  ctx.strokeStyle = gridColor;
   ctx.lineWidth = 1;
 
   const startX = Math.floor(left / gridSize) * gridSize;

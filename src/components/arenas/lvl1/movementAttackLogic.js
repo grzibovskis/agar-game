@@ -5,7 +5,8 @@ import {
   WORLD_HEIGHT,
   WORLD_WIDTH,
 } from "@/components/cell/logic/constants";
-import { blobArea, clamp, radiusFromArea } from "@/components/cell/logic/math";
+import { growBlobWithinGroup } from "@/components/cell/logic/blobLogic";
+import { blobArea, clamp } from "@/components/cell/logic/math";
 
 export function canEatCircle(biggerRadius, smallerRadius, distance) {
   if (biggerRadius <= smallerRadius * PVP_SIZE_ADVANTAGE) {
@@ -68,13 +69,13 @@ export function splitAndJump(blobs, mouseTarget, createBlob) {
   return next;
 }
 
-export function updateBlobMovement(blobs, target) {
+export function updateBlobMovement(blobs, target, speedMultiplier = 1) {
   for (const blob of blobs) {
     const dx = target.x - blob.x;
     const dy = target.y - blob.y;
     const distance = Math.hypot(dx, dy);
 
-    const chaseSpeed = Math.max(0.9, 5 - blob.radius * 0.05);
+    const chaseSpeed = Math.max(0.9, 5 - blob.radius * 0.05) * speedMultiplier;
 
     if (distance > 2) {
       blob.vx += (dx / distance) * chaseSpeed * 0.075;
@@ -133,8 +134,7 @@ export function consumeFood(blobs, food) {
       const distance = Math.hypot(dx, dy);
 
       if (distance < blob.radius + point.radius) {
-        const nextArea = blobArea(blob.radius) + blobArea(point.radius) * 0.6;
-        blob.radius = radiusFromArea(nextArea);
+        growBlobWithinGroup(blobs, blob, blobArea(point.radius) * 0.6);
         gainedScore += 1;
         return false;
       }
@@ -167,9 +167,7 @@ export function resolvePvpCombat(localBlobs, remotes, handlers) {
         const distance = Math.hypot(dx, dy);
 
         if (canEatCircle(localBlob.radius, remoteBlob.radius, distance)) {
-          localBlob.radius = radiusFromArea(
-            blobArea(localBlob.radius) + blobArea(remoteBlob.radius) * 0.9
-          );
+          growBlobWithinGroup(localBlobs, localBlob, blobArea(remoteBlob.radius) * 0.9);
 
           if (typeof onLocalEatRemoteBlob === "function") {
             onLocalEatRemoteBlob(remote, remoteIndex, remoteBlob, localIndex, localBlob);
