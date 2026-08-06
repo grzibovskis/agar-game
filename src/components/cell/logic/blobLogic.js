@@ -1,6 +1,13 @@
+import { WORLD_HEIGHT, WORLD_WIDTH } from "./constants";
 import { blobArea, radiusFromArea } from "./math";
 
 const MERGE_ANIM_DURATION_MS = 450;
+const MAX_COMBINED_BLOB_RADIUS = Math.min(WORLD_WIDTH, WORLD_HEIGHT) * 0.1;
+const MAX_COMBINED_BLOB_AREA = blobArea(MAX_COMBINED_BLOB_RADIUS);
+
+function getCombinedArea(blobs) {
+  return blobs.reduce((acc, blob) => acc + blobArea(blob.radius), 0);
+}
 
 export function createBlobFactory(blobIdRef) {
   return function createBlob(x, y, radius, vx = 0, vy = 0) {
@@ -19,8 +26,18 @@ export function createBlobFactory(blobIdRef) {
 }
 
 export function getCombinedRadius(blobs) {
-  const totalArea = blobs.reduce((acc, blob) => acc + blobArea(blob.radius), 0);
+  const totalArea = Math.min(getCombinedArea(blobs), MAX_COMBINED_BLOB_AREA);
   return Math.round(radiusFromArea(totalArea));
+}
+
+export function growBlobWithinGroup(blobs, blob, addedArea) {
+  const currentBlobArea = blobArea(blob.radius);
+  const otherBlobArea = getCombinedArea(blobs) - currentBlobArea;
+  const maxBlobArea = Math.max(currentBlobArea, MAX_COMBINED_BLOB_AREA - otherBlobArea);
+  const nextBlobArea = Math.min(currentBlobArea + addedArea, maxBlobArea);
+
+  blob.radius = radiusFromArea(nextBlobArea);
+  return blob.radius;
 }
 
 export function getBlobCentroid(blobs, fallbackX, fallbackY) {
@@ -28,7 +45,7 @@ export function getBlobCentroid(blobs, fallbackX, fallbackY) {
     return { x: fallbackX, y: fallbackY };
   }
 
-  const totalArea = blobs.reduce((acc, blob) => acc + blobArea(blob.radius), 0);
+  const totalArea = getCombinedArea(blobs);
 
   if (totalArea <= 0) {
     return { x: blobs[0].x, y: blobs[0].y };
@@ -99,7 +116,7 @@ export function mergeClosestPairsOnce(blobs, createBlob) {
 
     const x = (a.x * areaA + b.x * areaB) / totalArea;
     const y = (a.y * areaA + b.y * areaB) / totalArea;
-    const mergedRadius = radiusFromArea(totalArea);
+    const mergedRadius = radiusFromArea(Math.min(totalArea, MAX_COMBINED_BLOB_AREA));
 
     const newBlob = createBlob(x, y, mergedRadius);
     newBlob.mergeAnimStart = Date.now();

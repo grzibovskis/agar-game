@@ -221,12 +221,12 @@ export function findSpikeCollision(blobs, spikes) {
   return null;
 }
 
-export function splitToMaxCells(blobs, createBlob, origin = null) {
+export function splitToMaxCells(blobs, createBlob, origin = null, maxParts = MAX_BLOBS) {
   const minRadiusToSplit = MIN_SPLIT_RADIUS * Math.sqrt(2);
   let current = [...blobs];
 
   for (let round = 0; round < 8; round += 1) {
-    if (current.length >= MAX_BLOBS) {
+    if (current.length >= maxParts) {
       break;
     }
 
@@ -238,7 +238,7 @@ export function splitToMaxCells(blobs, createBlob, origin = null) {
       const remaining = current.length - i - 1;
       const canSplit =
         blob.radius >= minRadiusToSplit &&
-        next.length + 2 + remaining <= MAX_BLOBS;
+        next.length + 2 + remaining <= maxParts;
 
       if (!canSplit) {
         next.push(blob);

@@ -11,7 +11,7 @@ import {
   WORLD_HEIGHT,
   WORLD_WIDTH,
 } from "@/components/cell/logic/constants";
-import { clamp } from "@/components/cell/logic/math";
+import { blobArea, clamp, radiusFromArea } from "@/components/cell/logic/math";
 import {
   getBlobCentroid,
   getCombinedRadius,
@@ -42,6 +42,27 @@ import {
   splitToMaxCells,
   updateSpikesAndWarnings,
 } from "@/components/arenas/lvl1/spikeLogic";
+import {
+  BOSS_HIT_SCORE_DAMAGE,
+  BOSS_MAX_HEALTH,
+  BOSS_PLAYER_RADIUS,
+  BOSS_SPIKE_INTERVAL_MS,
+  BOSS_TRANSITION_MS,
+  activateBossState,
+  advanceLinearProjectile,
+  createBossRadialVolley,
+  createBossRewardDrops,
+  createBossSpecialItems,
+  createBossTransitionState,
+  createEmptyBossState,
+  createPlayerBossShot,
+  getLargestHumanTarget,
+  isBossModePhase,
+  keepBossGap,
+  moveBossTowardTarget,
+  normalizeBlobsForBoss,
+} from "@/components/arenas/lvl1/bossLogic";
+import BossEventOverlay from "@/components/boss/BossEventOverlay";
 import CellHeader from "@/components/layout/CellHeader";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
@@ -65,6 +86,39 @@ function createSessionId() {
 function round1(value) {
   return Math.round(value * 10) / 10;
 }
+
+function radiusFromScore(score) {
+  const baseRadius = 22;
+  const areaPerPoint = 65;
+  const maxRadius = Math.min(WORLD_WIDTH, WORLD_HEIGHT) * 0.1;
+  const normalizedScore = Math.max(0, score);
+  const totalArea = blobArea(baseRadius) + normalizedScore * areaPerPoint;
+  return clamp(radiusFromArea(totalArea), baseRadius, maxRadius);
+}
+
+function getCachedImage(cache, src) {
+  if (!src) {
+    return null;
+  }
+
+  if (cache.has(src)) {
+    return cache.get(src);
+  }
+
+  const image = new Image();
+  image.src = src;
+  cache.set(src, image);
+  return image;
+}
+
+const ITEM_EFFECT_DURATION_MS = 30_000;
+const MAP_PAN_STEP = 220;
+const ITEM_SPIKE_DAMAGE = 10;
+const ITEM_SPIKE_SPEED = 44;
+const ITEM_SPIKE_RADIUS = 10;
+const ITEM_SPIKE_TTL_MS = 2_200;
+const ITEM_SHIELD_PADDING = 90;
+const BOSS_SPAWN_SEQUENCE_MS = [10 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000];
 
 function serializeBlobs(blobs) {
   return blobs.map((blob) => [round1(blob.x), round1(blob.y), round1(blob.radius)]);
@@ -116,13 +170,25 @@ export default function AgarCell() {
   const warningZonesRef = useRef([]);
   const botsRef = useRef([]);
   const spikeEpochRef = useRef(0);
-  const lastSpikeBroadcastRef = useRef(0);
+  const lastSpikeBroadcastRef  = useRef(0);
+  const spikeImmunityUntilRef  = useRef(0); // ms timestamp until spike immunity expires
+  const ejectedFoodRef         = useRef([]);
+  const ejectedIdRef           = useRef(0);
+  const runStartedAtRef = useRef(0);
+  const nextBossAtRef = useRef(0);
+  const nextBossStageRef = useRef(0);
+  const bossStateRef = useRef(createEmptyBossState());
+  const lastBossBroadcastRef = useRef(0);
+  const specialItemImageCacheRef = useRef(new Map());
+  const activeItemRef = useRef(null);
+  const freeViewOffsetRef = useRef({ x: 0, y: 0 });
+  const itemSpikesRef = useRef([]);
+  const itemSpikeIdRef = useRef(1);
 
   const [score, setScore] = useState(0);
   const [size, setSize] = useState(22);
   const [parts, setParts] = useState(1);
   const [showGate, setShowGate] = useState(true);
-  const [guestMode, setGuestMode] = useState(false);
   const [guestName, setGuestName] = useState("");
   const [cellStarted, setCellStarted] = useState(false);
   const [deathReason, setDeathReason] = useState("");
@@ -134,6 +200,17 @@ export default function AgarCell() {
   const [currentSkin, setCurrentSkin] = useState(null);
   const currentSkinRef = useRef(null);
   const [playerColor, setPlayerColor] = useState("#22c55e");
+  const [faceExpression, setFaceExpression] = useState("serious");
+  const [bossUi, setBossUi] = useState({
+    phase: "inactive",
+    health: 0,
+    maxHealth: BOSS_MAX_HEALTH,
+    activatedAt: 0,
+  });
+  const [collectedBossItems, setCollectedBossItems] = useState([]);
+  const [activeBossItem, setActiveBossItem] = useState(null);
+  const lastScoreIncreaseTimeRef = useRef(Date.now());
+  const prevScoreForFaceRef = useRef(0);
 
   function createBlob(x, y, radius, vx = 0, vy = 0) {
     const id = blobIdRef.current;
@@ -149,10 +226,64 @@ export default function AgarCell() {
     };
   }
 
+  // Eject a glowing blue food piece toward the mouse (press E)
+  function ejectFood() {
+    if (!isAliveRef.current || !cellStartedRef.current) return;
+    const blobs = blobsRef.current;
+    if (!blobs.length) return;
+    const value = Math.max(1, Math.floor(scoreRef.current / 100));
+    if (scoreRef.current < value) return;
+    const centroid = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    const mouse    = mouseTargetRef.current;
+    const dx = mouse.x - centroid.x;
+    const dy = mouse.y - centroid.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const launchSpeed = 18;
+    const combinedR   = getCombinedRadius(blobs);
+    ejectedFoodRef.current.push({
+      id: ejectedIdRef.current++,
+      x: centroid.x + nx * (combinedR + 6),
+      y: centroid.y + ny * (combinedR + 6),
+      vx: nx * launchSpeed,
+      vy: ny * launchSpeed,
+      value,
+      radius: 3,
+      createdAt: Date.now(),
+    });
+    setScoreValue(Math.max(0, scoreRef.current - value));
+  }
+
   function setCellStartedValue(next) {
     cellStartedRef.current = next;
     setCellStarted(next);
   }
+
+  // Face expression: smile on eat, surprise on milestone, serious after 10s idle
+  useEffect(() => {
+    if (score > prevScoreForFaceRef.current) {
+      lastScoreIncreaseTimeRef.current = Date.now();
+      const crossedMilestone =
+        Math.floor(score / 10) > Math.floor(prevScoreForFaceRef.current / 10);
+      prevScoreForFaceRef.current = score;
+      if (crossedMilestone) {
+        setFaceExpression("surprise");
+        setTimeout(() => setFaceExpression("smile"), 1_500);
+      } else {
+        setFaceExpression("smile");
+      }
+    }
+  }, [score]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (Date.now() - lastScoreIncreaseTimeRef.current > 10_000) {
+        setFaceExpression((cur) => (cur === "serious" ? cur : "serious"));
+      }
+    }, 2_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     console.info("[AgarCell] educationStarted state changed", { cellStarted });
@@ -166,6 +297,602 @@ export default function AgarCell() {
   function setScoreValue(next) {
     scoreRef.current = next;
     setScore(next);
+  }
+
+  function getActiveItem(now = Date.now()) {
+    const current = activeItemRef.current;
+
+    if (!current || now >= current.expiresAt) {
+      return null;
+    }
+
+    return current;
+  }
+
+  function isItemActive(itemType, now = Date.now()) {
+    const current = getActiveItem(now);
+    return !!(current && current.itemType === itemType);
+  }
+
+  function consumeCollectedItem(itemType) {
+    if (!itemType) {
+      return;
+    }
+
+    setCollectedBossItems((prev) => prev
+      .map((item) => (
+        item.itemType === itemType
+          ? { ...item, count: Math.max(0, item.count - 1) }
+          : item
+      ))
+      .filter((item) => item.count > 0)
+    );
+  }
+
+  function clearActiveItemEffect(consumedType = null) {
+    activeItemRef.current = null;
+    setActiveBossItem(null);
+    freeViewOffsetRef.current = { x: 0, y: 0 };
+    itemSpikesRef.current = [];
+
+    if (consumedType) {
+      consumeCollectedItem(consumedType);
+    }
+  }
+
+  function activateCollectedItem(itemType) {
+    if (!itemType || !isAliveRef.current || !cellStartedRef.current) {
+      return false;
+    }
+
+    const now = Date.now();
+
+    if (getActiveItem(now)) {
+      return false;
+    }
+
+    const item = collectedBossItems.find((entry) => entry.itemType === itemType && entry.count > 0);
+
+    if (!item) {
+      return false;
+    }
+
+    const nextActive = {
+      itemType: item.itemType,
+      itemName: item.itemName,
+      iconSrc: item.iconSrc,
+      startedAt: now,
+      expiresAt: now + ITEM_EFFECT_DURATION_MS,
+    };
+
+    activeItemRef.current = nextActive;
+    setActiveBossItem(nextActive);
+    freeViewOffsetRef.current = { x: 0, y: 0 };
+    sendPlayerState(true);
+    return true;
+  }
+
+  function createItemSpikeShot(now = Date.now()) {
+    const blobs = blobsRef.current;
+
+    if (!blobs.length) {
+      return null;
+    }
+
+    const centroid = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    const mouse = mouseTargetRef.current;
+    const dx = mouse.x - centroid.x;
+    const dy = mouse.y - centroid.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    const nx = dx / distance;
+    const ny = dy / distance;
+    const launchOffset = getCombinedRadius(blobs) + 22;
+
+    return {
+      id: `item-spike-${itemSpikeIdRef.current++}`,
+      x: centroid.x + nx * launchOffset,
+      y: centroid.y + ny * launchOffset,
+      vx: nx * ITEM_SPIKE_SPEED,
+      vy: ny * ITEM_SPIKE_SPEED,
+      radius: ITEM_SPIKE_RADIUS,
+      damage: ITEM_SPIKE_DAMAGE,
+      expiresAt: now + ITEM_SPIKE_TTL_MS,
+      color: "#f97316",
+    };
+  }
+
+  function applyShieldPushback(localBlobs) {
+    if (!localBlobs.length) {
+      return;
+    }
+
+    const center = getBlobCentroid(localBlobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    const shieldRadius = getCombinedRadius(localBlobs) + ITEM_SHIELD_PADDING;
+
+    for (const remote of remotePlayersRef.current.values()) {
+      const dx = remote.x - center.x;
+      const dy = remote.y - center.y;
+      const distance = Math.hypot(dx, dy) || 0.0001;
+      const minDistance = shieldRadius + remote.radius;
+
+      if (distance >= minDistance) {
+        continue;
+      }
+
+      const nx = dx / distance;
+      const ny = dy / distance;
+      const push = minDistance - distance;
+      const nextX = clamp(remote.x + nx * push, remote.radius, WORLD_WIDTH - remote.radius);
+      const nextY = clamp(remote.y + ny * push, remote.radius, WORLD_HEIGHT - remote.radius);
+      const moveDx = nextX - remote.x;
+      const moveDy = nextY - remote.y;
+
+      remote.x = nextX;
+      remote.y = nextY;
+
+      if (Array.isArray(remote.blobs) && remote.blobs.length) {
+        remote.blobs = remote.blobs.map((blob) => ({
+          ...blob,
+          x: clamp(blob.x + moveDx, blob.radius, WORLD_WIDTH - blob.radius),
+          y: clamp(blob.y + moveDy, blob.radius, WORLD_HEIGHT - blob.radius),
+        }));
+      }
+    }
+
+    for (const bot of botsRef.current) {
+      if (!bot.active || !Array.isArray(bot.blobs) || !bot.blobs.length) {
+        continue;
+      }
+
+      for (const blob of bot.blobs) {
+        const dx = blob.x - center.x;
+        const dy = blob.y - center.y;
+        const distance = Math.hypot(dx, dy) || 0.0001;
+        const minDistance = shieldRadius + blob.radius;
+
+        if (distance >= minDistance) {
+          continue;
+        }
+
+        const nx = dx / distance;
+        const ny = dy / distance;
+        blob.x = clamp(center.x + nx * minDistance, blob.radius, WORLD_WIDTH - blob.radius);
+        blob.y = clamp(center.y + ny * minDistance, blob.radius, WORLD_HEIGHT - blob.radius);
+      }
+    }
+  }
+
+  function registerCollectedBossItems(items) {
+    if (!Array.isArray(items) || !items.length) {
+      return;
+    }
+
+    setCollectedBossItems((prev) => {
+      const next = [...prev];
+
+      for (const item of items) {
+        const type = item.itemType || "unknown";
+        const existingIndex = next.findIndex((entry) => entry.itemType === type);
+
+        if (existingIndex >= 0) {
+          next[existingIndex] = {
+            ...next[existingIndex],
+            count: next[existingIndex].count + 1,
+            iconSrc: item.iconSrc || next[existingIndex].iconSrc,
+            itemName: item.itemName || next[existingIndex].itemName,
+          };
+          continue;
+        }
+
+        next.push({
+          itemType: type,
+          itemName: item.itemName || type,
+          iconSrc: item.iconSrc || "",
+          count: 1,
+        });
+      }
+
+      return next;
+    });
+  }
+
+  function syncBossUi() {
+    const state = bossStateRef.current;
+    setBossUi({
+      phase: state.phase,
+      health: state.boss?.health ?? 0,
+      maxHealth: state.boss?.maxHealth ?? BOSS_MAX_HEALTH,
+      activatedAt: state.activatedAt || 0,
+    });
+  }
+
+  function hasAnyJoinedPlayers() {
+    return isAliveRef.current || remotePlayersRef.current.size > 0;
+  }
+
+  function getBossSpawnIntervalForStage(stage) {
+    if (stage < 0) {
+      return BOSS_SPAWN_SEQUENCE_MS[0];
+    }
+
+    if (stage >= BOSS_SPAWN_SEQUENCE_MS.length) {
+      return BOSS_SPAWN_SEQUENCE_MS[BOSS_SPAWN_SEQUENCE_MS.length - 1];
+    }
+
+    return BOSS_SPAWN_SEQUENCE_MS[stage];
+  }
+
+  function scheduleNextBossFrom(anchorMs) {
+    const interval = getBossSpawnIntervalForStage(nextBossStageRef.current);
+    nextBossAtRef.current = anchorMs + interval;
+    nextBossStageRef.current = Math.min(
+      nextBossStageRef.current + 1,
+      BOSS_SPAWN_SEQUENCE_MS.length - 1
+    );
+  }
+
+  function maybeResetBossStateIfIdle() {
+    if (hasAnyJoinedPlayers()) {
+      return;
+    }
+
+    nextBossAtRef.current = 0;
+    nextBossStageRef.current = 0;
+    bossStateRef.current = createEmptyBossState();
+    syncBossUi();
+  }
+
+  function clearStandardArenaForBoss() {
+    spikesRef.current = [];
+    warningZonesRef.current = [];
+    botsRef.current = [];
+    foodRef.current = [];
+    ejectedFoodRef.current = [];
+    mergeStateRef.current.nextMergeAt = null;
+  }
+
+  function normalizeLocalForBoss({ broadcast = true } = {}) {
+    const current = blobsRef.current.length
+      ? blobsRef.current
+      : [createBlob(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, 22)];
+    const next = normalizeBlobsForBoss(current, createBlob);
+    blobsRef.current = next;
+    updateHudFromBlobs(next);
+
+    if (broadcast) {
+      sendPlayerState(true);
+    }
+  }
+
+  function restoreNormalArenaAfterBoss() {
+    const now = Date.now();
+    const centroid = getBlobCentroid(blobsRef.current, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    const radius = radiusFromScore(scoreRef.current);
+    const x = clamp(centroid.x, radius, WORLD_WIDTH - radius);
+    const y = clamp(centroid.y, radius, WORLD_HEIGHT - radius);
+
+    spikeEpochRef.current = now;
+    spikesRef.current = createInitialSpikes(SPIKE_MAX_COUNT, now, WORLD_WIDTH, WORLD_HEIGHT);
+    warningZonesRef.current = [];
+    botsRef.current = createBots(now);
+    spikeImmunityUntilRef.current = 0;
+    ejectedFoodRef.current = [];
+    mergeStateRef.current.nextMergeAt = null;
+    blobsRef.current = [createBlob(x, y, radius)];
+    foodRef.current = createFood(
+      FOOD_TARGET,
+      WORLD_WIDTH,
+      WORLD_HEIGHT,
+      getRestrictedZones(spikesRef.current, warningZonesRef.current)
+    );
+    updateHudFromBlobs(blobsRef.current);
+    sendSpikeState(true);
+    sendPlayerState(true);
+  }
+
+  function sendBossState(force = false) {
+    const channel = channelRef.current;
+
+    if (!channel) {
+      return;
+    }
+
+    const hasBossPhase = isBossModePhase(bossStateRef.current.phase);
+    const hasSchedule = nextBossAtRef.current > 0;
+
+    if (!hasBossPhase && !force && !hasSchedule) {
+      return;
+    }
+
+    const now = Date.now();
+
+    if (!force && now - lastBossBroadcastRef.current < 1_500) {
+      return;
+    }
+
+    lastBossBroadcastRef.current = now;
+    bossStateRef.current.updatedAt = now;
+
+    const bossPayload = {
+      sessionId: sessionIdRef.current,
+      phase: bossStateRef.current.phase,
+      transitionStartedAt: bossStateRef.current.transitionStartedAt,
+      activatedAt: bossStateRef.current.activatedAt,
+      updatedAt: now,
+      resetAt: bossStateRef.current.resetAt || 0,
+      nextBossAt: nextBossAtRef.current || 0,
+      nextBossStage: nextBossStageRef.current,
+      rewardDropped: bossStateRef.current.rewardDropped,
+      boss: bossStateRef.current.boss,
+      bonusPoints: bossStateRef.current.bonusPoints,
+      specialItems: bossStateRef.current.specialItems,
+    };
+
+    try {
+      channel.send({
+        type: "broadcast",
+        event: "boss_state",
+        payload: bossPayload,
+      });
+    } catch (error) {
+      console.error("[AgarCell] failed to send boss_state", error);
+    }
+  }
+
+  function enterBossTransition(startedAt = Date.now(), shouldBroadcast = true) {
+    const current = bossStateRef.current;
+
+    if (
+      isBossModePhase(current.phase) &&
+      current.transitionStartedAt &&
+      current.transitionStartedAt <= startedAt
+    ) {
+      return;
+    }
+
+    const target = getLargestHumanTarget(
+      blobsRef.current,
+      {
+        sessionId: sessionIdRef.current,
+        radius: getCombinedRadius(blobsRef.current),
+        score: scoreRef.current,
+      },
+      remotePlayersRef.current
+    );
+
+    bossStateRef.current = createBossTransitionState(target, startedAt);
+    scheduleNextBossFrom(startedAt);
+    clearStandardArenaForBoss();
+
+    if (isAliveRef.current) {
+      normalizeLocalForBoss({ broadcast: false });
+      sendPlayerState(true);
+    }
+
+    syncBossUi();
+
+    if (shouldBroadcast) {
+      sendBossState(true);
+    }
+  }
+
+  function activateBossBattle(now = Date.now(), shouldBroadcast = true) {
+    if (bossStateRef.current.phase !== "transition") {
+      return;
+    }
+
+    bossStateRef.current = activateBossState(bossStateRef.current, now);
+    clearStandardArenaForBoss();
+
+    if (isAliveRef.current) {
+      normalizeLocalForBoss({ broadcast: false });
+      sendPlayerState(true);
+    }
+
+    syncBossUi();
+
+    if (shouldBroadcast) {
+      sendBossState(true);
+    }
+  }
+
+  function defeatBoss(now = Date.now(), shouldBroadcast = true) {
+    if (!bossStateRef.current.boss || bossStateRef.current.rewardDropped) {
+      return;
+    }
+
+    bossStateRef.current = {
+      ...bossStateRef.current,
+      phase: "defeated",
+      updatedAt: now,
+      rewardDropped: true,
+      boss: {
+        ...bossStateRef.current.boss,
+        health: 0,
+      },
+      playerShots: [],
+      bossSpikes: [],
+      bonusPoints: [
+        ...bossStateRef.current.bonusPoints,
+        ...createBossRewardDrops(bossStateRef.current.boss),
+      ],
+      specialItems: [
+        ...bossStateRef.current.specialItems,
+        ...createBossSpecialItems(bossStateRef.current.boss),
+      ],
+    };
+
+    syncBossUi();
+
+    if (shouldBroadcast) {
+      sendBossState(true);
+    }
+  }
+
+  function restoreNormalModeFromBoss(now = Date.now(), shouldBroadcast = true) {
+    bossStateRef.current = {
+      ...createEmptyBossState(),
+      updatedAt: now,
+      resetAt: now,
+    };
+    if (!hasAnyJoinedPlayers()) {
+      nextBossAtRef.current = 0;
+      nextBossStageRef.current = 0;
+    } else if (!nextBossAtRef.current) {
+      scheduleNextBossFrom(now);
+    }
+    syncBossUi();
+
+    if (isAliveRef.current) {
+      restoreNormalArenaAfterBoss();
+    }
+
+    if (shouldBroadcast) {
+      sendBossState(true);
+    }
+  }
+
+  function adoptBossState(payload) {
+    if (!payload) {
+      return;
+    }
+
+    if (payload.phase === "inactive") {
+      if ((payload.resetAt || 0) >= (bossStateRef.current.updatedAt || 0)) {
+        nextBossAtRef.current = payload.nextBossAt || 0;
+        nextBossStageRef.current = payload.nextBossStage || 0;
+        const wasBossMode = isBossModePhase(bossStateRef.current.phase);
+        bossStateRef.current = {
+          ...createEmptyBossState(),
+          updatedAt: payload.updatedAt || Date.now(),
+          resetAt: payload.resetAt || 0,
+        };
+        syncBossUi();
+
+        if (wasBossMode && isAliveRef.current) {
+          restoreNormalArenaAfterBoss();
+        }
+
+        if (skipeActive && itemSpikesRef.current.length) {
+          const remainingSpikes = [];
+
+          for (const spike of itemSpikesRef.current) {
+            if (now >= spike.expiresAt) {
+              continue;
+            }
+
+            const nextSpike = advanceLinearProjectile(spike);
+            let consumed = false;
+
+            if (bossMode && bossStateRef.current.boss && bossStateRef.current.phase === "active") {
+              const boss = bossStateRef.current.boss;
+              const hitBoss = Math.hypot(nextSpike.x - boss.x, nextSpike.y - boss.y) <= boss.radius + nextSpike.radius;
+
+              if (hitBoss) {
+                boss.health = Math.max(0, boss.health - ITEM_SPIKE_DAMAGE);
+                syncBossUi();
+                consumed = true;
+
+                if (boss.health <= 0) {
+                  defeatBoss(now, false);
+                }
+              }
+            }
+
+            if (!consumed) {
+              for (const remote of remotePlayersRef.current.values()) {
+                if (Math.hypot(nextSpike.x - remote.x, nextSpike.y - remote.y) > remote.radius + nextSpike.radius) {
+                  continue;
+                }
+
+                sendParticipantDamage(
+                  remote.sessionId,
+                  sessionIdRef.current,
+                  playerNameRef.current || "Unknown",
+                  ITEM_SPIKE_DAMAGE
+                );
+                consumed = true;
+                break;
+              }
+            }
+
+            if (!consumed) {
+              for (const bot of botsRef.current) {
+                if (!bot.active || !Array.isArray(bot.blobs)) {
+                  continue;
+                }
+
+                const hitBlob = bot.blobs.find((blob) => (
+                  Math.hypot(nextSpike.x - blob.x, nextSpike.y - blob.y) <= blob.radius + nextSpike.radius
+                ));
+
+                if (!hitBlob) {
+                  continue;
+                }
+
+                bot.score = Math.max(0, (bot.score || 0) - ITEM_SPIKE_DAMAGE);
+                consumed = true;
+                break;
+              }
+            }
+
+            if (!consumed) {
+              remainingSpikes.push(nextSpike);
+            }
+          }
+
+          itemSpikesRef.current = remainingSpikes;
+        }
+      }
+      return;
+    }
+
+    if (!isBossModePhase(payload.phase)) {
+      return;
+    }
+
+    const current = bossStateRef.current;
+    const incomingStart = payload.transitionStartedAt || 0;
+    const currentStart = current.transitionStartedAt || Number.POSITIVE_INFINITY;
+    const incomingHealth = payload.boss?.health ?? Number.POSITIVE_INFINITY;
+    const currentHealth = current.boss?.health ?? Number.POSITIVE_INFINITY;
+    const shouldAdopt =
+      !isBossModePhase(current.phase) ||
+      incomingStart < currentStart ||
+      (incomingStart === currentStart && payload.phase === "defeated" && current.phase !== "defeated") ||
+      (incomingStart === currentStart && incomingHealth < currentHealth) ||
+      (incomingStart === currentStart && (payload.updatedAt || 0) >= (current.updatedAt || 0));
+
+    if (!shouldAdopt) {
+      return;
+    }
+
+    bossStateRef.current = {
+      ...createEmptyBossState(),
+      ...payload,
+      playerShots: current.playerShots,
+      bossSpikes: current.bossSpikes,
+    };
+    nextBossAtRef.current = payload.nextBossAt || nextBossAtRef.current || 0;
+    nextBossStageRef.current = payload.nextBossStage ?? nextBossStageRef.current;
+
+    clearStandardArenaForBoss();
+    syncBossUi();
+
+    if (isAliveRef.current) {
+      normalizeLocalForBoss({ broadcast: false });
+      sendPlayerState(true);
+    }
+
+    if (
+      payload.phase === "defeated" &&
+      Array.isArray(payload.bonusPoints) &&
+      payload.bonusPoints.length === 0 &&
+      Array.isArray(payload.specialItems) &&
+      payload.specialItems.length === 0
+    ) {
+      restoreNormalModeFromBoss(payload.updatedAt || Date.now(), false);
+    }
   }
 
   function getLocalCentroidAndRadius() {
@@ -233,6 +960,7 @@ export default function AgarCell() {
     lastBroadcastRef.current = now;
 
     const local = getLocalCentroidAndRadius();
+    const activeItem = getActiveItem(now);
 
     try {
       channel.send({
@@ -249,6 +977,14 @@ export default function AgarCell() {
           blobs: serializeBlobs(blobsRef.current),
           score: scoreRef.current,
           skin: currentSkinRef.current,
+          activeItem: activeItem
+            ? {
+                itemType: activeItem.itemType,
+                itemName: activeItem.itemName,
+                iconSrc: activeItem.iconSrc,
+                expiresAt: activeItem.expiresAt,
+              }
+            : null,
           alive: true,
           updatedAt: now,
         },
@@ -284,7 +1020,7 @@ export default function AgarCell() {
     }
   }
 
-  function sendPlayerDeath(victimSessionId, killerSessionId, killerName) {
+  function sendParticipantDisconnected(victimSessionId, sourceSessionId, sourceName) {
     const channel = channelRef.current;
 
     if (!channel) {
@@ -294,44 +1030,68 @@ export default function AgarCell() {
     try {
       channel.send({
         type: "broadcast",
-        event: "player_dead",
+        event: "participant_inactive",
         payload: {
           victimSessionId,
-          killerSessionId,
-          killerName,
+          sourceSessionId,
+          sourceName,
           at: Date.now(),
         },
       });
     } catch (error) {
-      console.error("[AgarCell] failed to send player_dead", error);
+      console.error("[AgarCell] failed to send participant_inactive", error);
     }
   }
 
-  function sendPlayerBlobEaten(victimSessionId, killerSessionId, killerName, eatenBlob) {
+  function sendParticipantStateReduced(victimSessionId, sourceSessionId, sourceName, affectedBlob) {
     const channel = channelRef.current;
 
-    if (!channel || !eatenBlob) {
+    if (!channel || !affectedBlob) {
       return;
     }
 
     try {
       channel.send({
         type: "broadcast",
-        event: "player_blob_eaten",
+        event: "participant_state_reduced",
         payload: {
           victimSessionId,
-          killerSessionId,
-          killerName,
+          sourceSessionId,
+          sourceName,
           blob: {
-            x: round1(eatenBlob.x),
-            y: round1(eatenBlob.y),
-            radius: round1(eatenBlob.radius),
+            x: round1(affectedBlob.x),
+            y: round1(affectedBlob.y),
+            radius: round1(affectedBlob.radius),
           },
           at: Date.now(),
         },
       });
     } catch (error) {
-      console.error("[AgarCell] failed to send player_blob_eaten", error);
+      console.error("[AgarCell] failed to send participant_state_reduced", error);
+    }
+  }
+
+  function sendParticipantDamage(victimSessionId, sourceSessionId, sourceName, points) {
+    const channel = channelRef.current;
+
+    if (!channel || !victimSessionId || !points) {
+      return;
+    }
+
+    try {
+      channel.send({
+        type: "broadcast",
+        event: "participant_damage",
+        payload: {
+          victimSessionId,
+          sourceSessionId,
+          sourceName,
+          points,
+          at: Date.now(),
+        },
+      });
+    } catch (error) {
+      console.error("[AgarCell] failed to send participant_damage", error);
     }
   }
 
@@ -341,10 +1101,11 @@ export default function AgarCell() {
     if (deleted) {
       setOnlinePlayers(remotePlayersRef.current.size + 1);
       setLeaderboardPlayers((prev) => prev.filter((p) => p.sessionId !== sessionId));
+      maybeResetBossStateIfIdle();
     }
   }
 
-  function handleDefeat(killerName = "Another player") {
+  function handleSessionEnd(sourceName = "Another participant") {
     if (!isAliveRef.current) {
       return;
     }
@@ -357,11 +1118,13 @@ export default function AgarCell() {
     setLeaderboardPlayers((prev) => prev.filter((p) => !p.isLocal));
     currentSkinRef.current = null;
     setCurrentSkin(null);
-    setDeathReason(`Session ended after collision with ${killerName}.`);
+    setDeathReason(`Session ended after interaction with ${sourceName}.`);
     setShowGate(true);
-    setGuestMode(false);
     setGuestName("");
+    setFaceExpression("serious");
+    prevScoreForFaceRef.current = 0;
     resetCell({ includeObstacles: false });
+    maybeResetBossStateIfIdle();
   }
 
   function applyLocalBlobLoss(eatenBlobSnapshot = null) {
@@ -504,12 +1267,13 @@ export default function AgarCell() {
 
   function resetCell({ includeObstacles = true } = {}) {
     const canvas = canvasRef.current;
+    const bossMode = isBossModePhase(bossStateRef.current.phase);
 
     if (!canvas) {
       return;
     }
 
-    if (includeObstacles) {
+    if (includeObstacles && !bossMode) {
       const now = Date.now();
       spikeEpochRef.current = now;
       spikesRef.current = createInitialSpikes(SPIKE_MAX_COUNT, now, WORLD_WIDTH, WORLD_HEIGHT);
@@ -520,12 +1284,16 @@ export default function AgarCell() {
       warningZonesRef.current = [];
       botsRef.current = [];
     }
+    spikeImmunityUntilRef.current = 0;
+    ejectedFoodRef.current = [];
 
     // Pick a safe spawn that avoids spikes and other players.
     const { x: centerX, y: centerY } = findSafeSpawnPos();
 
-    blobsRef.current = [createBlob(centerX, centerY, 22)];
-    foodRef.current = includeObstacles
+    blobsRef.current = bossMode
+      ? normalizeBlobsForBoss([createBlob(centerX, centerY, 22)], createBlob)
+      : [createBlob(centerX, centerY, 22)];
+    foodRef.current = includeObstacles && !bossMode
       ? createFood(
           FOOD_TARGET,
           WORLD_WIDTH,
@@ -565,15 +1333,25 @@ export default function AgarCell() {
     playerColorRef.current = colorFromId(`${sessionIdRef.current}-${safeName}`);
     setPlayerColor(playerColorRef.current);
     isAliveRef.current = true;
+    runStartedAtRef.current = Date.now();
+    if (!nextBossAtRef.current) {
+      scheduleNextBossFrom(runStartedAtRef.current);
+    }
     spikeLogicStartedLoggedRef.current = false;
     setUsername(safeName);
     setDeathReason("");
     resetCell({ includeObstacles: true });
 
+    if (isBossModePhase(bossStateRef.current.phase)) {
+      clearStandardArenaForBoss();
+      normalizeLocalForBoss({ broadcast: false });
+    }
+
     setCellStartedValue(true);
     setShowGate(false);
     console.info("[AgarCell] Education started", { safeName });
     sendSpikeState(true);
+    sendBossState(true);
 
     const channel = channelRef.current;
     if (channel && typeof channel.track === "function") {
@@ -672,8 +1450,100 @@ export default function AgarCell() {
       target.y = clamp(camera.y + (viewY - canvas.clientHeight / 2) / zoom, 0, WORLD_HEIGHT);
     }
 
+    function handleCanvasClick(event) {
+      if (!isAliveRef.current || !cellStartedRef.current) {
+        return;
+      }
+
+      if (!isItemActive("teleport")) {
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const viewX = event.clientX - rect.left;
+      const viewY = event.clientY - rect.top;
+      const camera = cameraRef.current;
+      const zoom = zoomRef.current;
+      const targetX = clamp(camera.x + (viewX - canvas.clientWidth / 2) / zoom, 0, WORLD_WIDTH);
+      const targetY = clamp(camera.y + (viewY - canvas.clientHeight / 2) / zoom, 0, WORLD_HEIGHT);
+
+      const current = blobsRef.current;
+      if (!current.length) {
+        return;
+      }
+
+      const centroid = getBlobCentroid(current, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+      const dx = targetX - centroid.x;
+      const dy = targetY - centroid.y;
+
+      blobsRef.current = current.map((blob) => ({
+        ...blob,
+        x: clamp(blob.x + dx, blob.radius, WORLD_WIDTH - blob.radius),
+        y: clamp(blob.y + dy, blob.radius, WORLD_HEIGHT - blob.radius),
+      }));
+
+      sendPlayerState(true);
+    }
+
     function handleKeyDown(event) {
       if (!isAliveRef.current || !cellStartedRef.current) {
+        return;
+      }
+
+      const activeItem = getActiveItem();
+
+      if (event.code === "KeyQ" && (activeItem?.itemType === "spike" || activeItem?.itemType === "skipe")) {
+        event.preventDefault();
+        const shot = createItemSpikeShot(Date.now());
+        if (shot) {
+          itemSpikesRef.current.push(shot);
+        }
+        return;
+      }
+
+      if (activeItem && (activeItem.itemType === "map" || activeItem.itemType === "teleport")) {
+        if (event.code === "ArrowUp") {
+          event.preventDefault();
+          freeViewOffsetRef.current.y -= MAP_PAN_STEP;
+          return;
+        }
+        if (event.code === "ArrowDown") {
+          event.preventDefault();
+          freeViewOffsetRef.current.y += MAP_PAN_STEP;
+          return;
+        }
+        if (event.code === "ArrowLeft") {
+          event.preventDefault();
+          freeViewOffsetRef.current.x -= MAP_PAN_STEP;
+          return;
+        }
+        if (event.code === "ArrowRight") {
+          event.preventDefault();
+          freeViewOffsetRef.current.x += MAP_PAN_STEP;
+          return;
+        }
+      }
+
+      if (event.code === "KeyE") {
+        event.preventDefault();
+
+        if (bossStateRef.current.phase === "active") {
+          bossStateRef.current.playerShots.push(
+            createPlayerBossShot(
+              blobsRef.current,
+              mouseTargetRef.current,
+              sessionIdRef.current,
+              Date.now()
+            )
+          );
+          return;
+        }
+
+        ejectFood();
+        return;
+      }
+
+      if (isBossModePhase(bossStateRef.current.phase)) {
         return;
       }
 
@@ -757,15 +1627,64 @@ export default function AgarCell() {
       try {
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
+      const now = Date.now();
+      const bossPhase = bossStateRef.current.phase;
+      const transitionElapsed = now - (bossStateRef.current.transitionStartedAt || now);
+      const fogAlpha = bossPhase === "transition"
+        ? clamp(transitionElapsed / (BOSS_TRANSITION_MS * 0.45), 0, 0.85)
+        : 0;
+      const whiteAlpha = bossPhase === "transition"
+        ? clamp((transitionElapsed - BOSS_TRANSITION_MS * 0.45) / (BOSS_TRANSITION_MS * 0.55), 0, 1)
+        : (bossPhase === "active" || bossPhase === "defeated" ? 1 : 0);
+      const backgroundColor = whiteAlpha >= 1 ? "#f8fafc" : "#0b1325";
 
       ctx.clearRect(0, 0, width, height);
-      ctx.fillStyle = "#0b1325";
+      ctx.fillStyle = backgroundColor;
       ctx.fillRect(0, 0, width, height);
 
-      let blobs = blobsRef.current;
-      const now = Date.now();
+      if (bossPhase === "transition") {
+        ctx.fillStyle = `rgba(0, 0, 0, ${fogAlpha.toFixed(3)})`;
+        ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = `rgba(248, 250, 252, ${whiteAlpha.toFixed(3)})`;
+        ctx.fillRect(0, 0, width, height);
+      }
 
-      if (cellStartedRef.current && isAliveRef.current) {
+      let blobs = blobsRef.current;
+      let activeItem = getActiveItem(now);
+
+      if (activeItemRef.current && !activeItem) {
+        const consumedType = activeItemRef.current.itemType;
+        clearActiveItemEffect(consumedType);
+        sendPlayerState(true);
+      }
+
+      activeItem = getActiveItem(now);
+      const cloakActive = activeItem?.itemType === "cloak";
+      const mapScoutActive = activeItem?.itemType === "map";
+      const teleportActive = activeItem?.itemType === "teleport";
+      const shieldActive = activeItem?.itemType === "shield";
+      const skipeActive = activeItem?.itemType === "spike" || activeItem?.itemType === "skipe";
+
+      if (
+        cellStartedRef.current &&
+        isAliveRef.current &&
+        !isBossModePhase(bossStateRef.current.phase) &&
+        nextBossAtRef.current > 0 &&
+        now >= nextBossAtRef.current
+      ) {
+        enterBossTransition(now);
+      }
+
+      if (
+        bossStateRef.current.phase === "transition" &&
+        now >= bossStateRef.current.activatedAt
+      ) {
+        activateBossBattle(now);
+      }
+
+      let bossMode = isBossModePhase(bossStateRef.current.phase);
+
+      if (cellStartedRef.current && isAliveRef.current && !bossMode) {
         if (!spikeLogicStartedLoggedRef.current) {
           spikeLogicStartedLoggedRef.current = true;
           console.info("[AgarCell] Spike logic started");
@@ -790,137 +1709,346 @@ export default function AgarCell() {
       }
 
       if (isAliveRef.current && cellStartedRef.current) {
-        updateBlobMovement(blobs, mouseTargetRef.current);
+        updateBlobMovement(blobs, mouseTargetRef.current, bossMode ? 3 : 1);
         separateOverlappingBlobs(blobs);
+        bossMode = isBossModePhase(bossStateRef.current.phase);
 
-        keepBlobsOutsideWarnings(blobs, warningZonesRef.current);
+        if (shieldActive) {
+          applyShieldPushback(blobs);
+        }
 
-        const hitSpike = findSpikeCollision(blobs, spikesRef.current);
+        if (bossMode) {
+          clearStandardArenaForBoss();
 
-        if (hitSpike) {
-          const beforeCount = blobs.length;
-          const splitToMax = splitToMaxCells(blobs, createBlob, hitSpike);
-          const didSplit = splitToMax.length > beforeCount;
-          blobsRef.current = splitToMax;
-          blobs = splitToMax;
-
-          if (didSplit) {
-            mergeStateRef.current.nextMergeAt = Date.now() + getMergeDelayMs(splitToMax.length);
-            updateHudFromBlobs(splitToMax);
-            sendPlayerState(true);
+          if (
+            blobs.length !== 1 ||
+            Math.abs((blobs[0]?.radius || 0) - BOSS_PLAYER_RADIUS) > 0.5
+          ) {
+            normalizeLocalForBoss({ broadcast: false });
+            blobs = blobsRef.current;
           }
-        }
 
-        const { gainedScore, remainingFood } = consumeFood(blobs, foodRef.current);
-        foodRef.current = replenishFood(
-          remainingFood,
-          WORLD_WIDTH,
-          WORLD_HEIGHT,
-          getRestrictedZones(spikesRef.current, warningZonesRef.current)
-        );
+          let bossNeedsBroadcast = false;
+          let localScoreDelta = 0;
 
-        if (gainedScore > 0) {
-          setScoreValue(scoreRef.current + gainedScore);
-          updateHudFromBlobs(blobs);
-        }
-
-        // ── Bot AI update ────────────────────────────────────────────
-        {
-          const totalHumans = 1 + remotePlayersRef.current.size;
-          const maxActive   = Math.max(0, 10 - totalHumans);
-          const botResult   = updateBots({
-            bots: botsRef.current,
-            now,
-            food: foodRef.current,
-            maxActive,
-            localBlobs: blobs,
-            remotePlayers: remotePlayersRef.current,
-          });
-          botsRef.current = botResult.bots;
-          // Remove food consumed by bots
-          foodRef.current = foodRef.current.filter((_, i) => !botResult.consumedFoodIndices.has(i));
-
-          // Bot eats local blobs
-          const { updatedBots, nextLocalBlobs, botAteLocal, eatenLocalBlobs } = resolveBotVsLocal(botsRef.current, blobs);
-          if (botAteLocal) {
-            botsRef.current = updatedBots;
-            blobs = nextLocalBlobs;
-            blobsRef.current = nextLocalBlobs;
-            // Deduct score for each blob eaten by a bot
-            const penalty = eatenLocalBlobs.reduce(
-              (sum, b) => sum + Math.max(3, Math.round(b.radius * 0.6)), 0
+          if (bossStateRef.current.phase === "active" && bossStateRef.current.boss) {
+            const activeTarget = getLargestHumanTarget(
+              blobs,
+              {
+                sessionId: sessionIdRef.current,
+                radius: getCombinedRadius(blobs),
+                score: scoreRef.current,
+              },
+              remotePlayersRef.current
             );
-            setScoreValue(Math.max(0, scoreRef.current - penalty));
-            updateHudFromBlobs(nextLocalBlobs);
-            sendPlayerState(true);
-            if (!nextLocalBlobs.length) {
-              handleDefeat("a bot");
-              // RAF is always rescheduled after the try block; return safely here.
-              animationRef.current = requestAnimationFrame(cellLoop);
-              return;
+            bossStateRef.current.boss = moveBossTowardTarget(bossStateRef.current.boss, activeTarget);
+            const boss = bossStateRef.current.boss;
+            keepBossGap(blobs, boss);
+            const activeShots = [];
+            let nextHealth = boss.health;
+
+            for (const shot of bossStateRef.current.playerShots) {
+              if (now >= shot.expiresAt) {
+                continue;
+              }
+
+              const nextShot = advanceLinearProjectile(shot);
+              const distanceToBoss = Math.hypot(nextShot.x - boss.x, nextShot.y - boss.y);
+
+              if (distanceToBoss <= boss.radius + nextShot.radius) {
+                nextHealth = Math.max(0, nextHealth - 1);
+                bossNeedsBroadcast = true;
+                continue;
+              }
+
+              activeShots.push(nextShot);
+            }
+
+            bossStateRef.current.playerShots = activeShots;
+
+            if (nextHealth !== boss.health) {
+              boss.health = nextHealth;
+              syncBossUi();
+
+              if (nextHealth <= 0) {
+                defeatBoss(now, false);
+                bossNeedsBroadcast = true;
+              }
+            }
+
+            if (bossStateRef.current.phase === "active") {
+              if (now - (boss.lastSpikeAt || 0) >= BOSS_SPIKE_INTERVAL_MS) {
+                bossStateRef.current.bossSpikes.push(...createBossRadialVolley(boss, 14, now));
+                boss.lastSpikeAt = now;
+              }
+
+              let wasHitBySpike = false;
+
+              bossStateRef.current.bossSpikes = bossStateRef.current.bossSpikes.filter((spike) => {
+                if (now >= spike.expiresAt) {
+                  return false;
+                }
+
+                const nextSpike = advanceLinearProjectile(spike);
+                const collided = blobs.some(
+                  (blob) => Math.hypot(blob.x - nextSpike.x, blob.y - nextSpike.y) <= blob.radius + nextSpike.radius
+                );
+
+                if (collided) {
+                  wasHitBySpike = true;
+                  return false;
+                }
+
+                spike.x = nextSpike.x;
+                spike.y = nextSpike.y;
+                return true;
+              });
+
+              if (wasHitBySpike) {
+                const nextScore = Math.max(0, scoreRef.current - BOSS_HIT_SCORE_DAMAGE);
+                setScoreValue(nextScore);
+                sendPlayerState(true);
+
+                if (nextScore <= 0) {
+                  handleSessionEnd("the raid boss");
+                  animationRef.current = requestAnimationFrame(cellLoop);
+                  return;
+                }
+              }
             }
           }
-        }
 
-        // ── PvP: local eats remote players and bot blobs ─────────────
-        const botRemotes = botsRef.current
-          .filter(b => b.active && b.blobs.length > 0)
-          .map(b => ({
-            sessionId: b.id,
-            id: b.id,
-            username: b.name,
-            color: b.color,
-            x: b.blobs[0].x,
-            y: b.blobs[0].y,
-            radius: b.blobs[0].radius,
-            blobs: b.blobs,
-            isBot: true,
-          }));
-
-        resolvePvpCombat(blobs, [...remotePlayersRef.current.values(), ...botRemotes], {
-          onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
-            if (remote.isBot) {
-              botsRef.current = botsRef.current.map(bot =>
-                bot.id === remote.id
-                  ? { ...bot, blobs: bot.blobs.filter((_, i) => i !== remoteBlobIndex) }
-                  : bot
+          if (bossStateRef.current.bonusPoints.length) {
+            bossStateRef.current.bonusPoints = bossStateRef.current.bonusPoints.filter((pickup) => {
+              const collected = blobs.some(
+                (blob) => Math.hypot(blob.x - pickup.x, blob.y - pickup.y) <= blob.radius + pickup.radius
               );
-              setScoreValue(scoreRef.current + Math.max(6, Math.round((remoteBlob?.radius || 0) * 0.9)));
-              updateHudFromBlobs(blobs);
-              sendPlayerState(true);
-              return;
-            }
-            const eatenBlob =
-              applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex, remoteBlob) || remoteBlob;
-            setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
-            updateHudFromBlobs(blobs);
-            sendPlayerBlobEaten(
-              remote.sessionId,
-              sessionIdRef.current,
-              playerNameRef.current || "Unknown",
-              eatenBlob
-            );
 
+              if (!collected) {
+                return true;
+              }
+
+              localScoreDelta += pickup.value;
+              bossNeedsBroadcast = true;
+              return false;
+            });
+          }
+
+          if (bossStateRef.current.specialItems.length) {
+            const pickedSpecialItems = [];
+
+            bossStateRef.current.specialItems = bossStateRef.current.specialItems.filter((item) => {
+              const collected = blobs.some(
+                (blob) => Math.hypot(blob.x - item.x, blob.y - item.y) <= blob.radius + item.radius
+              );
+
+              if (collected) {
+                pickedSpecialItems.push(item);
+                bossNeedsBroadcast = true;
+                return false;
+              }
+
+              return true;
+            });
+
+            if (pickedSpecialItems.length) {
+              registerCollectedBossItems(pickedSpecialItems);
+            }
+          }
+
+          if (
+            bossStateRef.current.phase === "defeated" &&
+            bossStateRef.current.rewardDropped &&
+            bossStateRef.current.bonusPoints.length === 0 &&
+            bossStateRef.current.specialItems.length === 0
+          ) {
+            restoreNormalModeFromBoss(now, true);
+            bossMode = false;
+            blobs = blobsRef.current;
+          }
+
+          if (localScoreDelta > 0) {
+            setScoreValue(scoreRef.current + localScoreDelta);
             sendPlayerState(true);
-          },
-        });
+          }
+
+          if (bossNeedsBroadcast) {
+            sendBossState(true);
+          }
+        } else {
+          // Skip warning avoidance + collision while immune; immune player passes through freely
+          const isSpImmune = now < spikeImmunityUntilRef.current || shieldActive;
+          if (!isSpImmune) {
+            keepBlobsOutsideWarnings(blobs, warningZonesRef.current);
+
+            const hitSpike = findSpikeCollision(blobs, spikesRef.current);
+            if (hitSpike && getCombinedRadius(blobs) >= 20) {
+              const beforeCount = blobs.length;
+              const splitToMax = splitToMaxCells(blobs, createBlob, hitSpike, 16);
+              const didSplit = splitToMax.length > beforeCount;
+              blobsRef.current = splitToMax;
+              blobs = splitToMax;
+              spikeImmunityUntilRef.current = now + 10_000;
+              if (didSplit) {
+                mergeStateRef.current.nextMergeAt = now + getMergeDelayMs(splitToMax.length);
+                updateHudFromBlobs(splitToMax);
+                sendPlayerState(true);
+              }
+            }
+          }
+
+          const { gainedScore, remainingFood } = consumeFood(blobs, foodRef.current);
+          foodRef.current = replenishFood(
+            remainingFood,
+            WORLD_WIDTH,
+            WORLD_HEIGHT,
+            getRestrictedZones(spikesRef.current, warningZonesRef.current)
+          );
+
+          if (gainedScore > 0) {
+            setScoreValue(scoreRef.current + gainedScore);
+            updateHudFromBlobs(blobs);
+          }
+
+          ejectedFoodRef.current = ejectedFoodRef.current
+            .filter((p) => now - p.createdAt < 30_000)
+            .map((p) => ({
+              ...p,
+              x: clamp(p.x + p.vx, p.radius, WORLD_WIDTH - p.radius),
+              y: clamp(p.y + p.vy, p.radius, WORLD_HEIGHT - p.radius),
+              vx: p.vx * 0.92,
+              vy: p.vy * 0.92,
+            }));
+
+          if (ejectedFoodRef.current.length) {
+            let gained = 0;
+            const eaten = new Set();
+            for (const piece of ejectedFoodRef.current) {
+              for (const blob of blobs) {
+                if (!eaten.has(piece.id) && blob.radius >= 3 &&
+                    Math.hypot(blob.x - piece.x, blob.y - piece.y) < blob.radius) {
+                  eaten.add(piece.id);
+                  gained += piece.value;
+                }
+              }
+            }
+            if (eaten.size) {
+              ejectedFoodRef.current = ejectedFoodRef.current.filter((p) => !eaten.has(p.id));
+              if (gained > 0) setScoreValue(scoreRef.current + gained);
+            }
+          }
+
+          {
+            const totalHumans = 1 + remotePlayersRef.current.size;
+            const maxActive = Math.max(0, 10 - totalHumans);
+            const botResult = updateBots({
+              bots: botsRef.current,
+              now,
+              food: foodRef.current,
+              maxActive,
+              localBlobs: blobs,
+              remotePlayers: remotePlayersRef.current,
+            });
+            botsRef.current = botResult.bots;
+            foodRef.current = foodRef.current.filter((_, i) => !botResult.consumedFoodIndices.has(i));
+
+            const { updatedBots, nextLocalBlobs, botAteLocal, eatenLocalBlobs } = resolveBotVsLocal(botsRef.current, blobs);
+            if (botAteLocal && !cloakActive) {
+              botsRef.current = updatedBots;
+              blobs = nextLocalBlobs;
+              blobsRef.current = nextLocalBlobs;
+              const penalty = eatenLocalBlobs.reduce(
+                (sum, b) => sum + Math.max(3, Math.round(b.radius * 0.6)), 0
+              );
+              setScoreValue(Math.max(0, scoreRef.current - penalty));
+              updateHudFromBlobs(nextLocalBlobs);
+              sendPlayerState(true);
+              if (!nextLocalBlobs.length) {
+                handleSessionEnd("an automated participant");
+                animationRef.current = requestAnimationFrame(cellLoop);
+                return;
+              }
+            }
+          }
+
+          const botRemotes = botsRef.current
+            .filter(b => b.active && b.blobs.length > 0)
+            .map(b => ({
+              sessionId: b.id,
+              id: b.id,
+              username: b.name,
+              color: b.color,
+              x: b.blobs[0].x,
+              y: b.blobs[0].y,
+              radius: b.blobs[0].radius,
+              blobs: b.blobs,
+              isBot: true,
+            }));
+
+          const pvpTargets = [...remotePlayersRef.current.values(), ...botRemotes].filter((target) => {
+            const tActive = target.activeItem;
+            return !(tActive?.itemType === "cloak" && tActive.expiresAt > now);
+          });
+
+          if (!cloakActive) {
+            resolvePvpCombat(blobs, pvpTargets, {
+            onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
+              if (remote.isBot) {
+                botsRef.current = botsRef.current.map(bot =>
+                  bot.id === remote.id
+                    ? { ...bot, blobs: bot.blobs.filter((_, i) => i !== remoteBlobIndex) }
+                    : bot
+                );
+                setScoreValue(scoreRef.current + Math.max(6, Math.round((remoteBlob?.radius || 0) * 0.9)));
+                updateHudFromBlobs(blobs);
+                sendPlayerState(true);
+                return;
+              }
+              const eatenBlob =
+                applyRemoteBlobLoss(remote.sessionId, remoteBlobIndex, remoteBlob) || remoteBlob;
+              setScoreValue(scoreRef.current + Math.max(6, Math.round((eatenBlob?.radius || 0) * 0.9)));
+              updateHudFromBlobs(blobs);
+              sendParticipantStateReduced(
+                remote.sessionId,
+                sessionIdRef.current,
+                playerNameRef.current || "Unknown",
+                eatenBlob
+              );
+
+              sendPlayerState(true);
+            },
+            });
+          }
+        }
       }
 
       pruneStaleRemotePlayers();
       smoothRemotePlayers();
 
       const centroid = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+      const scoutCameraActive = !bossMode && (mapScoutActive || teleportActive);
+      const cameraFocusX = scoutCameraActive
+        ? centroid.x + freeViewOffsetRef.current.x
+        : centroid.x;
+      const cameraFocusY = scoutCameraActive
+        ? centroid.y + freeViewOffsetRef.current.y
+        : centroid.y;
 
       // Dynamic zoom: larger player sees more of the arena.
       const combinedRadius = blobs.length ? getCombinedRadius(blobs) : 22;
-      const targetZoom = clamp(Math.pow(60 / Math.max(combinedRadius, 1), 0.5), 0.25, 1.0);
+      const baseZoom = clamp(Math.pow(60 / Math.max(combinedRadius, 1), 0.5), 0.25, 1.0);
+      const targetZoom = scoutCameraActive
+        ? clamp(baseZoom / 4, 0.08, 0.35)
+        : bossMode
+          ? clamp(baseZoom / 4, 0.08, 0.35)
+          : baseZoom;
       zoomRef.current += (targetZoom - zoomRef.current) * 0.05;
       const zoom = zoomRef.current;
 
       const halfViewW = width / (2 * zoom);
       const halfViewH = height / (2 * zoom);
-      cameraRef.current.x = clamp(centroid.x, halfViewW, Math.max(halfViewW, WORLD_WIDTH - halfViewW));
-      cameraRef.current.y = clamp(centroid.y, halfViewH, Math.max(halfViewH, WORLD_HEIGHT - halfViewH));
+      cameraRef.current.x = clamp(cameraFocusX, halfViewW, Math.max(halfViewW, WORLD_WIDTH - halfViewW));
+      cameraRef.current.y = clamp(cameraFocusY, halfViewH, Math.max(halfViewH, WORLD_HEIGHT - halfViewH));
 
       const camera = cameraRef.current;
 
@@ -929,13 +2057,20 @@ export default function AgarCell() {
       ctx.scale(zoom, zoom);
       ctx.translate(-camera.x, -camera.y);
 
-      drawGrid(ctx, camera, width / zoom, height / zoom, GRID_SIZE);
+      drawGrid(
+        ctx,
+        camera,
+        width / zoom,
+        height / zoom,
+        GRID_SIZE,
+        bossMode ? "rgba(15, 23, 42, 0.12)" : "rgba(148, 163, 184, 0.2)"
+      );
 
-      ctx.strokeStyle = "rgba(148, 163, 184, 0.55)";
+      ctx.strokeStyle = bossMode ? "rgba(15, 23, 42, 0.35)" : "rgba(148, 163, 184, 0.55)";
       ctx.lineWidth = 5;
       ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
-      if (cellStartedRef.current) {
+      if (cellStartedRef.current && !bossMode) {
         drawWarningZones(ctx, warningZonesRef.current, now);
         drawSpikeBalls(ctx, spikesRef.current);
       }
@@ -944,7 +2079,146 @@ export default function AgarCell() {
         drawCircle(ctx, point.x, point.y, point.radius, point.color);
       }
 
+      // ── Ejected food: glowing blue circles ──
+      if (ejectedFoodRef.current.length) {
+        ctx.save();
+        ctx.shadowColor = "#60a5fa";
+        ctx.shadowBlur  = 10;
+        for (const piece of ejectedFoodRef.current) {
+          ctx.beginPath();
+          ctx.arc(piece.x, piece.y, piece.radius, 0, Math.PI * 2);
+          ctx.fillStyle = "#3b82f6";
+          ctx.fill();
+        }
+        ctx.shadowBlur = 0;
+        ctx.restore();
+      }
+
+      if (bossStateRef.current.bonusPoints.length) {
+        ctx.save();
+        for (const pickup of bossStateRef.current.bonusPoints) {
+          ctx.shadowColor = pickup.glow;
+          ctx.shadowBlur = pickup.kind === "bonus" ? 18 : 12;
+          drawCircle(ctx, pickup.x, pickup.y, pickup.radius, pickup.color);
+        }
+        ctx.restore();
+      }
+
+      if (bossStateRef.current.specialItems.length) {
+        ctx.save();
+        for (const item of bossStateRef.current.specialItems) {
+          const itemImage = getCachedImage(specialItemImageCacheRef.current, item.iconSrc);
+
+          ctx.beginPath();
+          ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
+          ctx.fillStyle = item.color || "#22d3ee";
+          ctx.shadowColor = item.glow || "rgba(34, 211, 238, 0.5)";
+          ctx.shadowBlur = 24;
+          ctx.fill();
+
+          if (itemImage && itemImage.complete && itemImage.naturalWidth > 0) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
+            ctx.clip();
+            ctx.drawImage(
+              itemImage,
+              item.x - item.radius,
+              item.y - item.radius,
+              item.radius * 2,
+              item.radius * 2
+            );
+            ctx.restore();
+          } else {
+            const initial = (item.itemName || item.itemType || "?").slice(0, 1).toUpperCase();
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 14px system-ui";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(initial, item.x, item.y + 0.5);
+          }
+
+          ctx.beginPath();
+          ctx.arc(item.x, item.y, item.radius - 3, 0, Math.PI * 2);
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = "rgba(255,255,255,0.92)";
+          ctx.stroke();
+
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = "rgba(2, 6, 23, 0.8)";
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      if (bossStateRef.current.boss) {
+        const boss = bossStateRef.current.boss;
+        const bossOpacity = bossPhase === "transition"
+          ? clamp(transitionElapsed / BOSS_TRANSITION_MS, 0.25, 1)
+          : bossPhase === "defeated"
+            ? 0.38
+            : 1;
+
+        ctx.save();
+        ctx.globalAlpha = bossOpacity;
+        ctx.beginPath();
+        ctx.arc(boss.x, boss.y, boss.radius, 0, Math.PI * 2);
+        ctx.fillStyle = bossPhase === "defeated" ? "#cbd5e1" : "#f8fafc";
+        ctx.shadowColor = bossPhase === "transition" ? "rgba(15,23,42,0.95)" : "rgba(248,250,252,0.9)";
+        ctx.shadowBlur = bossPhase === "transition" ? 70 : 28;
+        ctx.fill();
+        ctx.lineWidth = 8;
+        ctx.strokeStyle = bossPhase === "defeated" ? "#94a3b8" : "#1e293b";
+        ctx.stroke();
+
+        if (bossPhase !== "defeated") {
+          ctx.beginPath();
+          ctx.arc(boss.x, boss.y, boss.radius * 0.36, 0, Math.PI * 2);
+          ctx.fillStyle = "#dc2626";
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      if (bossStateRef.current.playerShots.length) {
+        ctx.save();
+        ctx.shadowColor = "rgba(220, 38, 38, 0.6)";
+        ctx.shadowBlur = 14;
+        for (const shot of bossStateRef.current.playerShots) {
+          drawCircle(ctx, shot.x, shot.y, shot.radius, shot.color);
+        }
+        ctx.restore();
+      }
+
+      if (bossStateRef.current.bossSpikes.length) {
+        ctx.save();
+        for (const spike of bossStateRef.current.bossSpikes) {
+          ctx.beginPath();
+          ctx.arc(spike.x, spike.y, spike.radius, 0, Math.PI * 2);
+          ctx.fillStyle = spike.color;
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = "#ef4444";
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      if (itemSpikesRef.current.length) {
+        ctx.save();
+        ctx.shadowColor = "rgba(249, 115, 22, 0.8)";
+        ctx.shadowBlur = 16;
+        for (const spike of itemSpikesRef.current) {
+          drawCircle(ctx, spike.x, spike.y, spike.radius, spike.color);
+        }
+        ctx.restore();
+      }
+
       for (const remote of remotePlayersRef.current.values()) {
+        const remoteCloakActive = remote.activeItem?.itemType === "cloak" && remote.activeItem.expiresAt > now;
+        if (remoteCloakActive) {
+          continue;
+        }
         drawRemotePlayer(ctx, remote);
       }
 
@@ -954,6 +2228,66 @@ export default function AgarCell() {
 
       for (const blob of blobs) {
         drawLocalBlob(ctx, blob, username, playerColorRef.current, now, currentSkinRef.current);
+      }
+
+      if (shieldActive && blobs.length) {
+        const center = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+        const shieldRadius = getCombinedRadius(blobs) + ITEM_SHIELD_PADDING;
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, shieldRadius, 0, Math.PI * 2);
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = "rgba(34, 197, 94, 0.85)";
+        ctx.stroke();
+      }
+
+      if (activeItem && blobs.length) {
+        const center = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+        const itemIconRadius = 13;
+        const iconY = center.y - combinedRadius - 28;
+        const iconX = center.x;
+        const remainingSeconds = Math.max(0, Math.ceil((activeItem.expiresAt - now) / 1000));
+        const iconImage = getCachedImage(specialItemImageCacheRef.current, activeItem.iconSrc);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(iconX, iconY, itemIconRadius, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(15, 23, 42, 0.86)";
+        ctx.fill();
+
+        if (iconImage && iconImage.complete && iconImage.naturalWidth > 0) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(iconX, iconY, itemIconRadius, 0, Math.PI * 2);
+          ctx.clip();
+          ctx.drawImage(
+            iconImage,
+            iconX - itemIconRadius,
+            iconY - itemIconRadius,
+            itemIconRadius * 2,
+            itemIconRadius * 2
+          );
+          ctx.restore();
+        } else {
+          const initial = (activeItem.itemName || activeItem.itemType || "?").slice(0, 1).toUpperCase();
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 12px system-ui";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(initial, iconX, iconY);
+        }
+
+        ctx.beginPath();
+        ctx.arc(iconX, iconY, itemIconRadius, 0, Math.PI * 2);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(255,255,255,0.92)";
+        ctx.stroke();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 12px system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(`${remainingSeconds}s`, iconX, iconY - 22);
+        ctx.restore();
       }
 
       ctx.restore();
@@ -973,6 +2307,10 @@ export default function AgarCell() {
       }
 
       sendPlayerState();
+
+      if (bossMode) {
+        sendBossState();
+      }
 
       // Throttled leaderboard refresh (~2× per second).
       if (now - lastLeaderboardUpdateRef.current >= 500) {
@@ -1051,6 +2389,8 @@ export default function AgarCell() {
               : [];
 
             const previous = remotePlayersRef.current.get(payload.sessionId);
+            const bossEventActive = isBossModePhase(bossStateRef.current.phase);
+            const fallbackRadius = bossEventActive ? BOSS_PLAYER_RADIUS : payload.radius;
 
             const next = {
               sessionId: payload.sessionId,
@@ -1058,15 +2398,19 @@ export default function AgarCell() {
               color: payload.color || colorFromId(payload.sessionId),
               x: payload.x,
               y: payload.y,
-              radius: payload.radius,
+              radius: fallbackRadius,
               score: typeof payload.score === "number" ? payload.score : (previous?.score ?? 0),
               skin: payload.skin ?? previous?.skin ?? null,
-              parts: payload.parts || 1,
+              activeItem: payload.activeItem ?? previous?.activeItem ?? null,
+              parts: bossEventActive ? 1 : (payload.parts || 1),
               updatedAt: payload.updatedAt || Date.now(),
               renderX: previous?.renderX ?? payload.x,
               renderY: previous?.renderY ?? payload.y,
-              renderRadius: previous?.renderRadius ?? payload.radius,
-              blobs: incomingBlobs.map((blob, index) => {
+              renderRadius: previous?.renderRadius ?? fallbackRadius,
+              blobs: (bossEventActive
+                ? [{ x: payload.x, y: payload.y, radius: BOSS_PLAYER_RADIUS }]
+                : incomingBlobs
+              ).map((blob, index) => {
                 const prevBlob = previous?.blobs?.[index];
                 return {
                   x: blob.x,
@@ -1089,7 +2433,7 @@ export default function AgarCell() {
 
             setOnlinePlayers(remotePlayersRef.current.size + 1);
           })
-          .on("broadcast", { event: "player_dead" }, ({ payload }) => {
+          .on("broadcast", { event: "participant_inactive" }, ({ payload }) => {
             if (!payload) {
               return;
             }
@@ -1097,10 +2441,10 @@ export default function AgarCell() {
             clearRemotePlayer(payload.victimSessionId);
 
             if (payload.victimSessionId === sessionIdRef.current) {
-              handleDefeat(payload.killerName || "Another player");
+              handleSessionEnd(payload.sourceName || "Another participant");
             }
           })
-          .on("broadcast", { event: "player_blob_eaten" }, ({ payload }) => {
+          .on("broadcast", { event: "participant_state_reduced" }, ({ payload }) => {
             if (!payload || payload.victimSessionId !== sessionIdRef.current || !isAliveRef.current) {
               return;
             }
@@ -1109,12 +2453,24 @@ export default function AgarCell() {
             applyLocalBlobLoss(payload.blob);
 
             if (localCountBefore <= 1 || !blobsRef.current.length) {
-              sendPlayerDeath(
+              sendParticipantDisconnected(
                 sessionIdRef.current,
-                payload.killerSessionId,
-                payload.killerName || "Another player"
+                payload.sourceSessionId,
+                payload.sourceName || "Another participant"
               );
-              handleDefeat(payload.killerName || "Another player");
+              handleSessionEnd(payload.sourceName || "Another participant");
+            }
+          })
+          .on("broadcast", { event: "participant_damage" }, ({ payload }) => {
+            if (!payload || payload.victimSessionId !== sessionIdRef.current || !isAliveRef.current) {
+              return;
+            }
+
+            const nextScore = Math.max(0, scoreRef.current - (payload.points || 0));
+            setScoreValue(nextScore);
+
+            if (nextScore <= 0) {
+              handleSessionEnd(payload.sourceName || "Another participant");
             }
           })
           .on("broadcast", { event: "player_left" }, ({ payload }) => {
@@ -1140,10 +2496,21 @@ export default function AgarCell() {
               warningZonesRef.current = payload.warnings || [];
             }
           })
+          .on("broadcast", { event: "boss_state" }, ({ payload }) => {
+            if (!payload || payload.sessionId === sessionIdRef.current) {
+              return;
+            }
+
+            adoptBossState(payload);
+          })
           .on("presence", { event: "sync" }, () => {
             const state = channel.presenceState();
             const members = Object.keys(state).length;
             setOnlinePlayers(Math.max(members, remotePlayersRef.current.size + 1));
+
+            if (hasAnyJoinedPlayers() && (isBossModePhase(bossStateRef.current.phase) || nextBossAtRef.current)) {
+              sendBossState(true);
+            }
           });
 
         channel.subscribe((status) => {
@@ -1198,6 +2565,7 @@ export default function AgarCell() {
 
     window.addEventListener("resize", resizeCanvas);
     canvas.addEventListener("mousemove", handleMouseMove);
+    canvas.addEventListener("click", handleCanvasClick);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("beforeunload", handleBeforeUnload);
     window.addEventListener("pagehide", handlePageHide);
@@ -1212,6 +2580,7 @@ export default function AgarCell() {
 
       window.removeEventListener("resize", resizeCanvas);
       canvas.removeEventListener("mousemove", handleMouseMove);
+      canvas.removeEventListener("click", handleCanvasClick);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("beforeunload", handleBeforeUnload);
       window.removeEventListener("pagehide", handlePageHide);
@@ -1229,7 +2598,7 @@ export default function AgarCell() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4">
+    <div className="min-h-screen bg-slate-950 p-3 text-white md:p-4" data-arena="main">
       <div className="mx-auto max-w-[1600px] space-y-3">
         <CellHeader
           score={score}
@@ -1238,7 +2607,11 @@ export default function AgarCell() {
           onlinePlayers={onlinePlayers}
           leaderboardPlayers={leaderboardPlayers}
           currentSkin={currentSkin}
+          collectedBossItems={collectedBossItems}
+          activeBossItem={activeBossItem}
+          onActivateBossItem={(itemType) => activateCollectedItem(itemType)}
           playerColor={playerColor}
+          faceExpression={faceExpression}
           username={username}
           onSelectSkin={(skinId) => {
             currentSkinRef.current = skinId;
@@ -1250,6 +2623,13 @@ export default function AgarCell() {
 
         {/* Arena wrapper — blurred + overlay when gate is open */}
         <div className="relative">
+          <BossEventOverlay
+            phase={bossUi.phase}
+            health={bossUi.health}
+            maxHealth={bossUi.maxHealth}
+            activatedAt={bossUi.activatedAt}
+          />
+
           <div className={showGate ? "pointer-events-none select-none blur-sm" : ""}>
             <CellArena canvasRef={canvasRef} isActive={cellStarted} />
           </div>
@@ -1267,73 +2647,41 @@ export default function AgarCell() {
                   </>
                 ) : (
                   <>
-                    <h2 className="mb-1 text-2xl font-bold text-white">Join the Arena</h2>
+                    <h2 className="mb-1 text-2xl font-bold text-white">Start Arena Session</h2>
                     <p className="mb-6 text-sm text-slate-400">
-                      Eat others, grow bigger, survive.
+                      Enter a display name to continue.
                     </p>
                   </>
                 )}
 
-                {guestMode ? (
-                  /* ── Guest username form ── */
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const name = guestName.trim().slice(0, 18);
-                      if (name) startRunWithUsername(name);
-                    }}
-                    className="space-y-3"
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const name = guestName.trim().slice(0, 18);
+                    if (name) startRunWithUsername(name);
+                  }}
+                  className="space-y-3"
+                >
+                  <label className="block text-sm font-medium text-slate-300">
+                    Display name
+                  </label>
+                  <input
+                    autoFocus
+                    type="text"
+                    maxLength={18}
+                    placeholder="Type your name"
+                    value={guestName}
+                    onChange={(e) => setGuestName(e.target.value)}
+                    className="w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!guestName.trim()}
+                    className="w-full rounded-xl bg-emerald-500 py-3 font-bold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <button
-                      type="button"
-                      onClick={() => setGuestMode(false)}
-                      className="mb-2 flex items-center gap-1 text-xs text-slate-500 transition hover:text-slate-300"
-                    >
-                      ← Back
-                    </button>
-                    <label className="block text-sm font-medium text-slate-300">
-                      Choose a name
-                    </label>
-                    <input
-                      autoFocus
-                      type="text"
-                      maxLength={18}
-                      placeholder="Your name…"
-                      value={guestName}
-                      onChange={(e) => setGuestName(e.target.value)}
-                      className="w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!guestName.trim()}
-                      className="w-full rounded-xl bg-emerald-500 py-3 font-bold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      Start Playing →
-                    </button>
-                  </form>
-                ) : (
-                  /* ── Initial choice ── */
-                  <div className="space-y-3">
-                    <button
-                      className="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 py-3.5 font-bold text-slate-950 shadow-lg shadow-emerald-900/40 transition-all hover:from-emerald-400 hover:to-cyan-400"
-                    >
-                      Log in / Sign up
-                    </button>
-
-                    <div className="flex items-center gap-3 text-slate-600">
-                      <span className="flex-1 border-t border-slate-700" />
-                      <span className="text-xs uppercase tracking-wide">or</span>
-                      <span className="flex-1 border-t border-slate-700" />
-                    </div>
-
-                    <button
-                      onClick={() => setGuestMode(true)}
-                      className="w-full rounded-xl border border-slate-600 py-3 text-sm font-medium text-slate-300 transition-colors hover:border-slate-500 hover:bg-slate-800 hover:text-white"
-                    >
-                      Play without registration
-                    </button>
-                  </div>
-                )}
+                    Start Arena
+                  </button>
+                </form>
               </div>
             </div>
           )}

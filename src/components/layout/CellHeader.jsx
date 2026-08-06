@@ -37,9 +37,13 @@ export default function CellHeader({
   onlinePlayers,
   leaderboardPlayers = [],
   currentSkin = null,
+  collectedBossItems = [],
+  activeBossItem = null,
+  onActivateBossItem,
   onSelectSkin,
   playerColor = "#22c55e",
   username = "",
+  faceExpression = "serious",
 }) {
   const [showAll, setShowAll] = useState(false);
 
@@ -64,12 +68,16 @@ export default function CellHeader({
         <PlayerCard
           playerColor={playerColor}
           currentSkin={currentSkin}
+          collectedBossItems={collectedBossItems}
+          activeBossItem={activeBossItem}
+          onActivateBossItem={onActivateBossItem}
           onSelectSkin={onSelectSkin}
           score={score}
           size={size}
           parts={parts}
           onlinePlayers={onlinePlayers}
           username={username}
+          faceExpression={faceExpression}
         />
 
         {/* ── Leaderboard box ── */}
