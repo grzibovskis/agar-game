@@ -1,49 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
-
-const RELOAD_KEY = "agarcell_chunk_reload_once";
-
-function getErrorMessage(reason) {
-  if (!reason) {
-    return "";
-  }
-
-  if (typeof reason === "string") {
-    return reason;
-  }
-
-  if (reason instanceof Error) {
-    return `${reason.name}: ${reason.message}`;
-  }
-
-  if (typeof reason.message === "string") {
-    return reason.message;
-  }
-
-  try {
-    return JSON.stringify(reason);
-  } catch {
-    return String(reason);
-  }
-}
-
-function isChunkLoadErrorText(message) {
-  if (!message) {
-    return false;
-  }
-
-  return /(ChunkLoadError|Loading chunk [\w-]+ failed|Failed to load chunk|dynamic import|Importing a module script failed|_next\/static\/chunks)/i.test(
-    message
-  );
-}
+import {
+  clearChunkReloadMarker,
+  getChunkErrorMessage,
+  hasChunkReloaded,
+  isChunkLoadErrorText,
+  markChunkReloaded,
+} from "@/lib/chunkRecovery";
 
 export default function ChunkErrorRecovery() {
   const [showPersistentError, setShowPersistentError] = useState(false);
 
   useEffect(() => {
+    clearChunkReloadMarker();
+
     function handleChunkError(reason) {
-      const message = getErrorMessage(reason);
+      const message = getChunkErrorMessage(reason);
 
       if (!isChunkLoadErrorText(message)) {
         return;
@@ -51,10 +24,10 @@ export default function ChunkErrorRecovery() {
 
       console.error("[ChunkErrorRecovery] ChunkLoadError detected", { message });
 
-      const alreadyReloaded = sessionStorage.getItem(RELOAD_KEY) === "1";
+      const alreadyReloaded = hasChunkReloaded();
 
       if (!alreadyReloaded) {
-        sessionStorage.setItem(RELOAD_KEY, "1");
+        markChunkReloaded();
         console.info("[ChunkErrorRecovery] Triggering one-time reload fallback");
         window.location.reload();
         return;
