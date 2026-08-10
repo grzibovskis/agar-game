@@ -119,19 +119,11 @@ const WORLD_ITEM_RADIUS = 22;
 const WORLD_ITEM_MAX_ACTIVE = 8;
 const WORLD_ITEM_SPAWN_MIN_MS = 12_000;
 const WORLD_ITEM_SPAWN_MAX_MS = 28_000;
-const MAGNET_RANGE_MULTIPLIER = 2;
 const MAGNET_MIN_RANGE = 120;
+const MAGNET_VISIBLE_RANGE_RATIO = 0.6;
 const MAGNET_PULL_FOOD = 0.18;
 const MAGNET_PULL_EJECTED = 0.14;
 const MAGNET_PULL_BOT = 0.12;
-const MINION_MAX_ACTIVE = 2;
-const MINION_RADIUS = 16;
-const MINION_FOLLOW_DISTANCE = 90;
-const MINION_CHASE_MULTIPLIER = 2;
-const MINION_ORBIT_PADDING = 30;
-const MINION_SPEED = 7;
-const MINION_SPIKE_MORPH_MS = 3_200;
-const MINION_SPIKE_ACTIVE_MS = 1_100;
 const TELEPORT_MIN_GAP = 36;
 const WORLD_ITEM_DEFS = [
   {
@@ -173,14 +165,6 @@ const WORLD_ITEM_DEFS = [
     iconSrc: "/items/magnet.png",
     color: "#facc15",
     glow: "rgba(250, 204, 21, 0.55)",
-  },
-  {
-    itemType: "minion",
-    itemName: "Minion",
-    probability: 7,
-    iconSrc: "/items/minion.png",
-    color: "#38bdf8",
-    glow: "rgba(56, 189, 248, 0.55)",
   },
 ];
 
@@ -269,8 +253,6 @@ export default function AgarCell() {
   const worldItemsRef = useRef([]);
   const worldItemIdRef = useRef(1);
   const nextWorldItemSpawnAtRef = useRef(0);
-  const minionsRef = useRef([]);
-  const minionIdRef = useRef(1);
 
   const [score, setScore] = useState(0);
   const [size, setSize] = useState(22);
@@ -477,180 +459,13 @@ export default function AgarCell() {
     }
   }
 
-  function getMinionSpawnableDefs() {
-    if (minionsRef.current.length >= MINION_MAX_ACTIVE) {
-      return WORLD_ITEM_DEFS.filter((item) => item.itemType !== "minion");
-    }
-
-    return WORLD_ITEM_DEFS;
-  }
-
-  function spawnMinion(now = Date.now()) {
-    if (minionsRef.current.length >= MINION_MAX_ACTIVE) {
-      return false;
-    }
-
-    const blobs = blobsRef.current;
-
-    if (!blobs.length) {
-      return false;
-    }
-
-    const center = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-    const angle = Math.random() * Math.PI * 2;
-    const startDistance = getCombinedRadius(blobs) + MINION_FOLLOW_DISTANCE;
-
-    minionsRef.current.push({
-      id: `minion-${sessionIdRef.current}-${minionIdRef.current++}`,
-      x: clamp(center.x + Math.cos(angle) * startDistance, MINION_RADIUS, WORLD_WIDTH - MINION_RADIUS),
-      y: clamp(center.y + Math.sin(angle) * startDistance, MINION_RADIUS, WORLD_HEIGHT - MINION_RADIUS),
-      seed: Math.random() * 10_000,
-      createdAt: now,
-    });
-
-    return true;
-  }
-
-  function getNearestMinionTarget(center, range) {
-    let nearest = null;
-    let nearestDistance = Infinity;
-
-    for (const remote of remotePlayersRef.current.values()) {
-      const dx = remote.x - center.x;
-      const dy = remote.y - center.y;
-      const distance = Math.hypot(dx, dy);
-
-      if (distance > range || distance >= nearestDistance) {
-        continue;
-      }
-
-      nearest = {
-        x: remote.x,
-        y: remote.y,
-        radius: remote.radius,
-      };
-      nearestDistance = distance;
-    }
-
-    for (const bot of botsRef.current) {
-      if (!bot.active || !Array.isArray(bot.blobs) || !bot.blobs.length) {
-        continue;
-      }
-
-      const botCenter = getBlobCentroid(bot.blobs, bot.blobs[0].x, bot.blobs[0].y);
-      const botRadius = getCombinedRadius(bot.blobs);
-      const dx = botCenter.x - center.x;
-      const dy = botCenter.y - center.y;
-      const distance = Math.hypot(dx, dy);
-
-      if (distance > range || distance >= nearestDistance) {
-        continue;
-      }
-
-      nearest = {
-        x: botCenter.x,
-        y: botCenter.y,
-        radius: botRadius,
-      };
-      nearestDistance = distance;
-    }
-
-    return nearest;
-  }
-
-  function updateMinions(now, localBlobs) {
-    if (!localBlobs.length || !isAliveRef.current || !cellStartedRef.current) {
-      minionsRef.current = [];
-      return;
-    }
-
-    if (!minionsRef.current.length) {
-      return;
-    }
-
-    const center = getBlobCentroid(localBlobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-    const localRadius = getCombinedRadius(localBlobs);
-    const chaseRange = Math.max(MAGNET_MIN_RANGE, localRadius * MINION_CHASE_MULTIPLIER);
-    const chaseTarget = getNearestMinionTarget(center, chaseRange);
-
-    minionsRef.current = minionsRef.current.slice(0, MINION_MAX_ACTIVE).map((minion, index) => {
-      const hasTarget = !!chaseTarget;
-      const baseAngle = (now / 520) + index * Math.PI;
-      const orbitRadius = hasTarget
-        ? (chaseTarget.radius + MINION_ORBIT_PADDING)
-        : (localRadius + MINION_FOLLOW_DISTANCE + index * 14);
-      const anchorX = hasTarget ? chaseTarget.x : center.x;
-      const anchorY = hasTarget ? chaseTarget.y : center.y;
-      const desiredX = anchorX + Math.cos(baseAngle + minion.seed * 0.001) * orbitRadius;
-      const desiredY = anchorY + Math.sin(baseAngle + minion.seed * 0.001) * orbitRadius;
-      const dx = desiredX - minion.x;
-      const dy = desiredY - minion.y;
-      const distance = Math.hypot(dx, dy) || 1;
-      const speed = Math.min(MINION_SPEED, distance * 0.35);
-
-      return {
-        ...minion,
-        x: clamp(minion.x + (dx / distance) * speed, MINION_RADIUS, WORLD_WIDTH - MINION_RADIUS),
-        y: clamp(minion.y + (dy / distance) * speed, MINION_RADIUS, WORLD_HEIGHT - MINION_RADIUS),
-      };
-    });
-  }
-
-  function drawMinion(ctx, minion, now) {
-    const phase = (now + minion.seed) % MINION_SPIKE_MORPH_MS;
-    const inSpikeMode = phase < MINION_SPIKE_ACTIVE_MS;
-    const pulse = 0.92 + Math.sin((now + minion.seed) / 220) * 0.08;
-    const bodyRadius = MINION_RADIUS * pulse;
-
-    ctx.save();
-    ctx.translate(minion.x, minion.y);
-    ctx.rotate((now + minion.seed) / 450);
-
-    if (inSpikeMode) {
-      ctx.beginPath();
-      const spikes = 12;
-      for (let i = 0; i < spikes * 2; i += 1) {
-        const angle = (Math.PI * i) / spikes;
-        const r = i % 2 === 0 ? bodyRadius + 4 : bodyRadius - 4;
-        const x = Math.cos(angle) * r;
-        const y = Math.sin(angle) * r;
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      }
-      ctx.closePath();
-      ctx.fillStyle = "rgba(56, 189, 248, 0.95)";
-      ctx.shadowColor = "rgba(56, 189, 248, 0.75)";
-      ctx.shadowBlur = 16;
-      ctx.fill();
-      ctx.lineWidth = 1.8;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-      ctx.stroke();
-    } else {
-      ctx.beginPath();
-      ctx.arc(0, 0, bodyRadius, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(56, 189, 248, 0.86)";
-      ctx.shadowColor = "rgba(56, 189, 248, 0.7)";
-      ctx.shadowBlur = 12;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(255,255,255,0.9)";
-      ctx.stroke();
-    }
-
-    ctx.restore();
-  }
-
-  function applyMagnetEffect(localBlobs) {
+  function applyMagnetEffect(localBlobs, visibleRange) {
     if (!localBlobs.length) {
       return;
     }
 
     const center = getBlobCentroid(localBlobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-    const localRadius = getCombinedRadius(localBlobs);
-    const magnetRange = Math.max(MAGNET_MIN_RANGE, localRadius * MAGNET_RANGE_MULTIPLIER);
+    const magnetRange = Math.max(MAGNET_MIN_RANGE, visibleRange * MAGNET_VISIBLE_RANGE_RATIO);
 
     foodRef.current = foodRef.current.map((point) => {
       const dx = center.x - point.x;
@@ -758,17 +573,6 @@ export default function AgarCell() {
 
     if (!item) {
       return false;
-    }
-
-    if (itemType === "minion") {
-      const spawned = spawnMinion(now);
-
-      if (spawned) {
-        consumeCollectedItem(itemType);
-        sendPlayerState(true);
-      }
-
-      return spawned;
     }
 
     const nextActive = {
@@ -887,8 +691,7 @@ export default function AgarCell() {
   }
 
   function createWorldItem(now = Date.now()) {
-    const spawnableDefs = getMinionSpawnableDefs();
-    const finalItemDef = pickWeightedWorldItemDef(spawnableDefs);
+    const finalItemDef = pickWeightedWorldItemDef();
     const padding = WORLD_ITEM_RADIUS + 140;
     const x = clamp(
       padding + Math.random() * (WORLD_WIDTH - padding * 2),
@@ -1675,7 +1478,6 @@ export default function AgarCell() {
     spikeImmunityUntilRef.current = 0;
     ejectedFoodRef.current = [];
     worldItemsRef.current = [];
-    minionsRef.current = [];
     nextWorldItemSpawnAtRef.current = 0;
 
     // Pick a safe spawn that avoids spikes and other players.
@@ -2056,7 +1858,6 @@ export default function AgarCell() {
       if (isAliveRef.current && cellStartedRef.current) {
         updateBlobMovement(blobs, mouseTargetRef.current, bossMode ? 3 : 1);
         separateOverlappingBlobs(blobs);
-        updateMinions(now, blobs);
         bossMode = isBossModePhase(bossStateRef.current.phase);
 
         if (shieldActive) {
@@ -2276,7 +2077,9 @@ export default function AgarCell() {
           }
         } else {
           if (magnetActive) {
-            applyMagnetEffect(blobs);
+            const currentZoom = Math.max(0.08, zoomRef.current || 1);
+            const visibleRange = Math.min(width, height) / (2 * currentZoom);
+            applyMagnetEffect(blobs, visibleRange);
           }
 
           // Skip warning avoidance + collision while immune; immune player passes through freely
@@ -2652,12 +2455,6 @@ export default function AgarCell() {
 
       for (const blob of blobs) {
         drawLocalBlob(ctx, blob, username, playerColorRef.current, now, currentSkinRef.current);
-      }
-
-      if (minionsRef.current.length) {
-        for (const minion of minionsRef.current) {
-          drawMinion(ctx, minion, now);
-        }
       }
 
       if (shieldActive && blobs.length) {
