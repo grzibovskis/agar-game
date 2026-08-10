@@ -67,14 +67,6 @@ const SPECIAL_ITEM_DEFS = [
     color: "#facc15",
     glow: "rgba(250, 204, 21, 0.55)",
   },
-  {
-    id: "minion",
-    name: "Minion",
-    probability: 7,
-    iconSrc: "/items/minion.png",
-    color: "#38bdf8",
-    glow: "rgba(56, 189, 248, 0.55)",
-  },
 ];
 
 function nextPickupId(prefix) {
