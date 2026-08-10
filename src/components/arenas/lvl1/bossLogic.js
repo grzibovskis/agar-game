@@ -36,14 +36,6 @@ const SPECIAL_ITEM_DEFS = [
     glow: "rgba(56, 189, 248, 0.55)",
   },
   {
-    id: "spike",
-    name: "Spike",
-    probability: 30,
-    iconSrc: "/items/spike.png",
-    color: "#f59e0b",
-    glow: "rgba(245, 158, 11, 0.55)",
-  },
-  {
     id: "shield",
     name: "Shield",
     probability: 15,
@@ -62,10 +54,26 @@ const SPECIAL_ITEM_DEFS = [
   {
     id: "teleport",
     name: "Teleport",
-    probability: 2,
+    probability: 5,
     iconSrc: "/items/teleport.png",
     color: "#f43f5e",
     glow: "rgba(244, 63, 94, 0.55)",
+  },
+  {
+    id: "magnet",
+    name: "Magnet",
+    probability: 23,
+    iconSrc: "/items/magnet.png",
+    color: "#facc15",
+    glow: "rgba(250, 204, 21, 0.55)",
+  },
+  {
+    id: "minion",
+    name: "Minion",
+    probability: 7,
+    iconSrc: "/items/minion.png",
+    color: "#38bdf8",
+    glow: "rgba(56, 189, 248, 0.55)",
   },
 ];
 
