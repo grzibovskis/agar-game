@@ -1,9 +1,6 @@
 import {
-  clearChunkReloadMarker,
   getChunkErrorMessage,
-  hasChunkReloaded,
   isChunkLoadErrorText,
-  markChunkReloaded,
 } from "@/lib/chunkRecovery";
 
 function handleChunkFailure(reason) {
@@ -15,12 +12,12 @@ function handleChunkFailure(reason) {
 
   console.error("[instrumentation-client] Chunk load failure detected", { message });
 
-  if (hasChunkReloaded()) {
-    return;
-  }
-
-  markChunkReloaded();
-  window.location.reload();
+  // Let UI decide if/when to reload. Avoid automatic navigation loops.
+  window.dispatchEvent(
+    new CustomEvent("agar:chunk-failure", {
+      detail: { message },
+    })
+  );
 }
 
 try {
@@ -31,14 +28,6 @@ try {
   window.addEventListener("unhandledrejection", (event) => {
     handleChunkFailure(event.reason);
   });
-
-  window.addEventListener(
-    "pageshow",
-    () => {
-      clearChunkReloadMarker();
-    },
-    { once: true }
-  );
 } catch (error) {
   console.error("[instrumentation-client] failed to initialize chunk recovery", error);
 }

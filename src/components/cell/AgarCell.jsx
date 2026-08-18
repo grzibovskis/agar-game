@@ -65,6 +65,7 @@ import {
 } from "@/components/arenas/lvl1/bossLogic";
 import CellHeader from "@/components/layout/CellHeader";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { sanitizeUsername } from "@/lib/sanitize";
 
 // Returns merge delay in ms based on number of blobs currently in play.
 // 2 blobs (1 split) → 60s, 3 blobs → 45s, 4 blobs → 30s, 5+ blobs → 20s.
@@ -1557,13 +1558,11 @@ export default function AgarCell() {
   }
 
   function startRunWithUsername(name) {
-    const safeName = name.trim().slice(0, 18);
+    const safeName = sanitizeUsername(name);
 
     if (!safeName) {
       return;
     }
-
-    console.info("[AgarCell] Start button clicked", { safeName });
 
     try {
       setUsername(safeName);
