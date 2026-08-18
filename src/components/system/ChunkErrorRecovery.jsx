@@ -2,19 +2,15 @@
 
 import { useEffect, useState } from "react";
 import {
-  clearChunkReloadMarker,
   getChunkErrorMessage,
-  hasChunkReloaded,
   isChunkLoadErrorText,
-  markChunkReloaded,
 } from "@/lib/chunkRecovery";
 
 export default function ChunkErrorRecovery() {
   const [showPersistentError, setShowPersistentError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
-    clearChunkReloadMarker();
-
     function handleChunkError(reason) {
       const message = getChunkErrorMessage(reason);
 
@@ -23,16 +19,7 @@ export default function ChunkErrorRecovery() {
       }
 
       console.error("[ChunkErrorRecovery] ChunkLoadError detected", { message });
-
-      const alreadyReloaded = hasChunkReloaded();
-
-      if (!alreadyReloaded) {
-        markChunkReloaded();
-        console.info("[ChunkErrorRecovery] Triggering one-time reload fallback");
-        window.location.reload();
-        return;
-      }
-
+      setErrorMessage(message);
       setShowPersistentError(true);
     }
 
@@ -44,12 +31,18 @@ export default function ChunkErrorRecovery() {
       handleChunkError(event.reason);
     }
 
+    function onChunkFailure(event) {
+      handleChunkError(event?.detail?.message);
+    }
+
     window.addEventListener("error", onWindowError);
     window.addEventListener("unhandledrejection", onUnhandledRejection);
+    window.addEventListener("agar:chunk-failure", onChunkFailure);
 
     return () => {
       window.removeEventListener("error", onWindowError);
       window.removeEventListener("unhandledrejection", onUnhandledRejection);
+      window.removeEventListener("agar:chunk-failure", onChunkFailure);
     };
   }, []);
 
@@ -58,8 +51,18 @@ export default function ChunkErrorRecovery() {
   }
 
   return (
-    <div className="fixed inset-x-0 top-0 z-[120] bg-red-700/95 px-4 py-3 text-sm text-white">
-      Update could not be loaded from the network. Please hard refresh (Ctrl+F5) or try another network.
+    <div className="fixed inset-x-0 top-0 z-[120] flex flex-wrap items-center gap-3 bg-red-700/95 px-4 py-3 text-sm text-white">
+      <span>
+        Update could not be loaded from the network. Reload to recover.
+        {errorMessage ? ` (${errorMessage})` : ""}
+      </span>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        className="rounded-md bg-white px-3 py-1 font-semibold text-red-700"
+      >
+        Reload page
+      </button>
     </div>
   );
 }
