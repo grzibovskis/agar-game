@@ -98,6 +98,7 @@ function radiusFromScore(score) {
 const SCORE_AREA_PER_POINT = 65;
 const BOSS_SPAWN_SEQUENCE_MS = [10 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000];
 
+
 function serializeBlobs(blobs) {
   return blobs.map((blob) => [round1(blob.x), round1(blob.y), round1(blob.radius)]);
 }
