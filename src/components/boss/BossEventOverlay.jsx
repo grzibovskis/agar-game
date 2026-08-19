@@ -19,7 +19,7 @@ function getPhaseCopy(phase, secondsLeft) {
 
   return {
     title: "Boss Defeated",
-    detail: "Collect the scattered score drops and glowing items.",
+    detail: "Collect the scattered score drops.",
   };
 }
 

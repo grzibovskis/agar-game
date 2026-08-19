@@ -24,50 +24,6 @@ export const BOSS_RADIAL_VOLLEY_COUNT = 14;
 let pickupId = 1;
 let projectileId = 1;
 let spikeId = 1;
-let itemId = 1;
-
-const SPECIAL_ITEM_DEFS = [
-  {
-    id: "map",
-    name: "Map",
-    probability: 50,
-    iconSrc: "/items/map.png",
-    color: "#38bdf8",
-    glow: "rgba(56, 189, 248, 0.55)",
-  },
-  {
-    id: "shield",
-    name: "Shield",
-    probability: 15,
-    iconSrc: "/items/shield.png",
-    color: "#22c55e",
-    glow: "rgba(34, 197, 94, 0.55)",
-  },
-  {
-    id: "cloak",
-    name: "Invisibility",
-    probability: 3,
-    iconSrc: "/items/cloak.png",
-    color: "#a78bfa",
-    glow: "rgba(167, 139, 250, 0.55)",
-  },
-  {
-    id: "teleport",
-    name: "Teleport",
-    probability: 5,
-    iconSrc: "/items/teleport.png",
-    color: "#f43f5e",
-    glow: "rgba(244, 63, 94, 0.55)",
-  },
-  {
-    id: "magnet",
-    name: "Magnet",
-    probability: 23,
-    iconSrc: "/items/magnet.png",
-    color: "#facc15",
-    glow: "rgba(250, 204, 21, 0.55)",
-  },
-];
 
 function nextPickupId(prefix) {
   const id = `${prefix}-${pickupId}`;
@@ -87,32 +43,11 @@ function nextSpikeId() {
   return id;
 }
 
-function nextItemId() {
-  const id = `boss-item-${itemId}`;
-  itemId += 1;
-  return id;
-}
-
 function polarOffset(center, angle, distance) {
   return {
     x: center.x + Math.cos(angle) * distance,
     y: center.y + Math.sin(angle) * distance,
   };
-}
-
-function pickWeightedSpecialItem() {
-  const total = SPECIAL_ITEM_DEFS.reduce((sum, item) => sum + item.probability, 0);
-  const roll = Math.random() * total;
-  let threshold = 0;
-
-  for (const item of SPECIAL_ITEM_DEFS) {
-    threshold += item.probability;
-    if (roll <= threshold) {
-      return item;
-    }
-  }
-
-  return SPECIAL_ITEM_DEFS[0];
 }
 
 export function isBossModePhase(phase) {
@@ -135,7 +70,6 @@ export function createEmptyBossState() {
     resetAt: 0,
     boss: null,
     bonusPoints: [],
-    specialItems: [],
     playerShots: [],
     bossSpikes: [],
     rewardDropped: false,
@@ -228,7 +162,6 @@ export function createBossTransitionStateNearTarget(target = null, now = Date.no
       targetSessionId: anchor.sessionId || "fallback",
     },
     bonusPoints: [],
-    specialItems: [],
     playerShots: [],
     bossSpikes: [],
     rewardDropped: false,
@@ -342,31 +275,6 @@ export function createBossRewardDrops(boss, totalValue = 500, shardCount = 10) {
       color: "#f97316",
       glow: "rgba(249, 115, 22, 0.4)",
       kind: "reward",
-    };
-  });
-}
-
-export function createBossSpecialItems(boss, count = 2 + Math.floor(Math.random() * 4)) {
-  const center = boss || { ...getBossCenter(), radius: BOSS_RADIUS };
-
-  return Array.from({ length: count }, (_, index) => {
-    const selected = pickWeightedSpecialItem();
-    const angle = (Math.PI * 2 * index) / count + Math.PI / 8;
-    const distance = center.radius + 220 + (index % 2) * 34;
-    const pos = polarOffset(center, angle, distance);
-
-    return {
-      id: nextItemId(),
-      x: pos.x,
-      y: pos.y,
-      radius: 34,
-      color: selected.color,
-      glow: selected.glow,
-      itemType: selected.id,
-      itemName: selected.name,
-      iconSrc: selected.iconSrc,
-      probability: selected.probability,
-      kind: "special",
     };
   });
 }

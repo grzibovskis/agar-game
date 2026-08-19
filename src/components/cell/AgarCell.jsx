@@ -53,7 +53,6 @@ import {
   advanceLinearProjectile,
   createBossRadialVolley,
   createBossRewardDrops,
-  createBossSpecialItems,
   createBossTransitionState,
   createEmptyBossState,
   createPlayerBossShot,
@@ -96,98 +95,9 @@ function radiusFromScore(score) {
   return clamp(radiusFromArea(totalArea), baseRadius, maxRadius);
 }
 
-function getCachedImage(cache, src) {
-  if (!src) {
-    return null;
-  }
-
-  if (cache.has(src)) {
-    return cache.get(src);
-  }
-
-  const image = new Image();
-  image.src = src;
-  cache.set(src, image);
-  return image;
-}
-
-const ITEM_EFFECT_DURATION_MS = 30_000;
-const MAP_PAN_STEP = 220;
-const ITEM_SHIELD_PADDING = 90;
 const SCORE_AREA_PER_POINT = 65;
 const BOSS_SPAWN_SEQUENCE_MS = [10 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000];
-const WORLD_ITEM_RADIUS = 22;
-const WORLD_ITEM_MAX_ACTIVE = 8;
-const WORLD_ITEM_SPAWN_MIN_MS = 12_000;
-const WORLD_ITEM_SPAWN_MAX_MS = 28_000;
-const MAGNET_MIN_RANGE = 720;
-const MAGNET_VISIBLE_RANGE_RATIO = 3.6;
-const MAGNET_PULL_FOOD = 0.18;
-const MAGNET_PULL_EJECTED = 0.14;
-const MAGNET_PULL_BOT = 0.12;
-const TELEPORT_MIN_GAP = 36;
-const WORLD_ITEM_DEFS = [
-  {
-    itemType: "map",
-    itemName: "Map",
-    probability: 50,
-    iconSrc: "/items/map.png",
-    color: "#38bdf8",
-    glow: "rgba(56, 189, 248, 0.55)",
-  },
-  {
-    itemType: "shield",
-    itemName: "Shield",
-    probability: 15,
-    iconSrc: "/items/shield.png",
-    color: "#22c55e",
-    glow: "rgba(34, 197, 94, 0.55)",
-  },
-  {
-    itemType: "cloak",
-    itemName: "Invisibility",
-    probability: 3,
-    iconSrc: "/items/cloak.png",
-    color: "#a78bfa",
-    glow: "rgba(167, 139, 250, 0.55)",
-  },
-  {
-    itemType: "teleport",
-    itemName: "Teleport",
-    probability: 5,
-    iconSrc: "/items/teleport.png",
-    color: "#f43f5e",
-    glow: "rgba(244, 63, 94, 0.55)",
-  },
-  {
-    itemType: "magnet",
-    itemName: "Magnet",
-    probability: 23,
-    iconSrc: "/items/magnet.png",
-    color: "#facc15",
-    glow: "rgba(250, 204, 21, 0.55)",
-  },
-];
 
-function randomIntBetween(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function pickWeightedWorldItemDef(defs = WORLD_ITEM_DEFS) {
-  const pool = Array.isArray(defs) && defs.length ? defs : WORLD_ITEM_DEFS;
-  const total = pool.reduce((sum, item) => sum + item.probability, 0);
-  const roll = Math.random() * total;
-  let threshold = 0;
-
-  for (const item of pool) {
-    threshold += item.probability;
-    if (roll <= threshold) {
-      return item;
-    }
-  }
-
-  return pool[0];
-}
 
 function serializeBlobs(blobs) {
   return blobs.map((blob) => [round1(blob.x), round1(blob.y), round1(blob.radius)]);
@@ -248,12 +158,6 @@ export default function AgarCell() {
   const nextBossStageRef = useRef(0);
   const bossStateRef = useRef(createEmptyBossState());
   const lastBossBroadcastRef = useRef(0);
-  const specialItemImageCacheRef = useRef(new Map());
-  const activeItemRef = useRef(null);
-  const freeViewOffsetRef = useRef({ x: 0, y: 0 });
-  const worldItemsRef = useRef([]);
-  const worldItemIdRef = useRef(1);
-  const nextWorldItemSpawnAtRef = useRef(0);
 
   const [score, setScore] = useState(0);
   const [size, setSize] = useState(22);
@@ -277,8 +181,6 @@ export default function AgarCell() {
     maxHealth: BOSS_MAX_HEALTH,
     activatedAt: 0,
   });
-  const [collectedBossItems, setCollectedBossItems] = useState([]);
-  const [activeBossItem, setActiveBossItem] = useState(null);
   const lastScoreIncreaseTimeRef = useRef(Date.now());
   const prevScoreForFaceRef = useRef(0);
 
@@ -420,326 +322,6 @@ export default function AgarCell() {
     setScore(next);
   }
 
-  function getActiveItem(now = Date.now()) {
-    const current = activeItemRef.current;
-
-    if (!current || now >= current.expiresAt) {
-      return null;
-    }
-
-    return current;
-  }
-
-  function isItemActive(itemType, now = Date.now()) {
-    const current = getActiveItem(now);
-    return !!(current && current.itemType === itemType);
-  }
-
-  function consumeCollectedItem(itemType) {
-    if (!itemType) {
-      return;
-    }
-
-    setCollectedBossItems((prev) => prev
-      .map((item) => (
-        item.itemType === itemType
-          ? { ...item, count: Math.max(0, item.count - 1) }
-          : item
-      ))
-      .filter((item) => item.count > 0)
-    );
-  }
-
-  function clearActiveItemEffect(consumedType = null) {
-    activeItemRef.current = null;
-    setActiveBossItem(null);
-    freeViewOffsetRef.current = { x: 0, y: 0 };
-
-    if (consumedType) {
-      consumeCollectedItem(consumedType);
-    }
-  }
-
-  function applyMagnetEffect(localBlobs, visibleRange) {
-    if (!localBlobs.length) {
-      return;
-    }
-
-    const center = getBlobCentroid(localBlobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-    const magnetRange = Math.max(MAGNET_MIN_RANGE, visibleRange * MAGNET_VISIBLE_RANGE_RATIO);
-
-    foodRef.current = foodRef.current.map((point) => {
-      const dx = center.x - point.x;
-      const dy = center.y - point.y;
-      const distance = Math.hypot(dx, dy) || 0.0001;
-
-      if (distance > magnetRange) {
-        return point;
-      }
-
-      const pullScale = (1 - distance / magnetRange) * MAGNET_PULL_FOOD;
-      return {
-        ...point,
-        x: clamp(point.x + (dx / distance) * pullScale * 18, point.radius, WORLD_WIDTH - point.radius),
-        y: clamp(point.y + (dy / distance) * pullScale * 18, point.radius, WORLD_HEIGHT - point.radius),
-      };
-    });
-
-    ejectedFoodRef.current = ejectedFoodRef.current.map((piece) => {
-      const dx = center.x - piece.x;
-      const dy = center.y - piece.y;
-      const distance = Math.hypot(dx, dy) || 0.0001;
-
-      if (distance > magnetRange) {
-        return piece;
-      }
-
-      const pullScale = (1 - distance / magnetRange) * MAGNET_PULL_EJECTED;
-      return {
-        ...piece,
-        vx: piece.vx + (dx / distance) * pullScale * 1.25,
-        vy: piece.vy + (dy / distance) * pullScale * 1.25,
-      };
-    });
-
-    for (const bot of botsRef.current) {
-      if (!bot.active || !Array.isArray(bot.blobs) || !bot.blobs.length) {
-        continue;
-      }
-
-      for (const botBlob of bot.blobs) {
-        const dx = center.x - botBlob.x;
-        const dy = center.y - botBlob.y;
-        const distance = Math.hypot(dx, dy) || 0.0001;
-
-        if (distance > magnetRange) {
-          continue;
-        }
-
-        const pullScale = (1 - distance / magnetRange) * MAGNET_PULL_BOT;
-        botBlob.x = clamp(
-          botBlob.x + (dx / distance) * pullScale * 10,
-          botBlob.radius,
-          WORLD_WIDTH - botBlob.radius
-        );
-        botBlob.y = clamp(
-          botBlob.y + (dy / distance) * pullScale * 10,
-          botBlob.radius,
-          WORLD_HEIGHT - botBlob.radius
-        );
-      }
-    }
-  }
-
-  function isTeleportTargetAllowed(targetX, targetY, localRadius) {
-    const targetTouchesBot = botsRef.current.some((bot) => (
-      bot.active &&
-      Array.isArray(bot.blobs) &&
-      bot.blobs.some((blob) => (
-        Math.hypot(targetX - blob.x, targetY - blob.y) <= localRadius + blob.radius + TELEPORT_MIN_GAP
-      ))
-    ));
-
-    const targetTouchesPoint =
-      foodRef.current.some((point) => (
-        Math.hypot(targetX - point.x, targetY - point.y) <= localRadius + point.radius + TELEPORT_MIN_GAP
-      )) ||
-      ejectedFoodRef.current.some((point) => (
-        Math.hypot(targetX - point.x, targetY - point.y) <= localRadius + point.radius + TELEPORT_MIN_GAP
-      ));
-
-    if (!targetTouchesBot && !targetTouchesPoint) {
-      return false;
-    }
-
-    const tooCloseToPlayer = [...remotePlayersRef.current.values()].some((remote) => (
-      Math.hypot(targetX - remote.x, targetY - remote.y) <= localRadius + remote.radius + TELEPORT_MIN_GAP
-    ));
-
-    return !tooCloseToPlayer;
-  }
-
-  function activateCollectedItem(itemType) {
-    if (!itemType || !isAliveRef.current || !cellStartedRef.current) {
-      return false;
-    }
-
-    const now = Date.now();
-
-    if (getActiveItem(now)) {
-      return false;
-    }
-
-    const item = collectedBossItems.find((entry) => entry.itemType === itemType && entry.count > 0);
-
-    if (!item) {
-      return false;
-    }
-
-    const nextActive = {
-      itemType: item.itemType,
-      itemName: item.itemName,
-      iconSrc: item.iconSrc,
-      startedAt: now,
-      expiresAt: now + ITEM_EFFECT_DURATION_MS,
-    };
-
-    activeItemRef.current = nextActive;
-    setActiveBossItem(nextActive);
-    freeViewOffsetRef.current = { x: 0, y: 0 };
-    sendPlayerState(true);
-    return true;
-  }
-
-  function applyShieldPushback(localBlobs) {
-    if (!localBlobs.length) {
-      return;
-    }
-
-    const center = getBlobCentroid(localBlobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-    const shieldRadius = getCombinedRadius(localBlobs) + ITEM_SHIELD_PADDING;
-
-    for (const remote of remotePlayersRef.current.values()) {
-      const dx = remote.x - center.x;
-      const dy = remote.y - center.y;
-      const distance = Math.hypot(dx, dy) || 0.0001;
-      const minDistance = shieldRadius + remote.radius;
-
-      if (distance >= minDistance) {
-        continue;
-      }
-
-      const nx = dx / distance;
-      const ny = dy / distance;
-      const push = minDistance - distance;
-      const nextX = clamp(remote.x + nx * push, remote.radius, WORLD_WIDTH - remote.radius);
-      const nextY = clamp(remote.y + ny * push, remote.radius, WORLD_HEIGHT - remote.radius);
-      const moveDx = nextX - remote.x;
-      const moveDy = nextY - remote.y;
-
-      remote.x = nextX;
-      remote.y = nextY;
-
-      if (Array.isArray(remote.blobs) && remote.blobs.length) {
-        remote.blobs = remote.blobs.map((blob) => ({
-          ...blob,
-          x: clamp(blob.x + moveDx, blob.radius, WORLD_WIDTH - blob.radius),
-          y: clamp(blob.y + moveDy, blob.radius, WORLD_HEIGHT - blob.radius),
-        }));
-      }
-    }
-
-    for (const bot of botsRef.current) {
-      if (!bot.active || !Array.isArray(bot.blobs) || !bot.blobs.length) {
-        continue;
-      }
-
-      for (const blob of bot.blobs) {
-        const dx = blob.x - center.x;
-        const dy = blob.y - center.y;
-        const distance = Math.hypot(dx, dy) || 0.0001;
-        const minDistance = shieldRadius + blob.radius;
-
-        if (distance >= minDistance) {
-          continue;
-        }
-
-        const nx = dx / distance;
-        const ny = dy / distance;
-        blob.x = clamp(center.x + nx * minDistance, blob.radius, WORLD_WIDTH - blob.radius);
-        blob.y = clamp(center.y + ny * minDistance, blob.radius, WORLD_HEIGHT - blob.radius);
-      }
-    }
-  }
-
-  function registerCollectedBossItems(items) {
-    if (!Array.isArray(items) || !items.length) {
-      return;
-    }
-
-    setCollectedBossItems((prev) => {
-      const next = [...prev];
-
-      for (const item of items) {
-        const type = item.itemType || "unknown";
-        const existingIndex = next.findIndex((entry) => entry.itemType === type);
-
-        if (existingIndex >= 0) {
-          next[existingIndex] = {
-            ...next[existingIndex],
-            count: next[existingIndex].count + 1,
-            iconSrc: item.iconSrc || next[existingIndex].iconSrc,
-            itemName: item.itemName || next[existingIndex].itemName,
-          };
-          continue;
-        }
-
-        next.push({
-          itemType: type,
-          itemName: item.itemName || type,
-          iconSrc: item.iconSrc || "",
-          count: 1,
-        });
-      }
-
-      return next;
-    });
-  }
-
-  function scheduleNextWorldItemSpawn(anchorMs = Date.now()) {
-    nextWorldItemSpawnAtRef.current =
-      anchorMs + randomIntBetween(WORLD_ITEM_SPAWN_MIN_MS, WORLD_ITEM_SPAWN_MAX_MS);
-  }
-
-  function createWorldItem(now = Date.now()) {
-    const finalItemDef = pickWeightedWorldItemDef();
-    const padding = WORLD_ITEM_RADIUS + 140;
-    const x = clamp(
-      padding + Math.random() * (WORLD_WIDTH - padding * 2),
-      WORLD_ITEM_RADIUS,
-      WORLD_WIDTH - WORLD_ITEM_RADIUS
-    );
-    const y = clamp(
-      padding + Math.random() * (WORLD_HEIGHT - padding * 2),
-      WORLD_ITEM_RADIUS,
-      WORLD_HEIGHT - WORLD_ITEM_RADIUS
-    );
-
-    return {
-      id: `world-item-${worldItemIdRef.current++}`,
-      x,
-      y,
-      radius: WORLD_ITEM_RADIUS,
-      itemType: finalItemDef.itemType,
-      itemName: finalItemDef.itemName,
-      iconSrc: finalItemDef.iconSrc,
-      color: finalItemDef.color,
-      glow: finalItemDef.glow,
-      spawnedAt: now,
-    };
-  }
-
-  function maybeSpawnWorldItem(now = Date.now()) {
-    if (!isAliveRef.current || !cellStartedRef.current) {
-      return;
-    }
-
-    if (!nextWorldItemSpawnAtRef.current) {
-      scheduleNextWorldItemSpawn(now);
-      return;
-    }
-
-    if (now < nextWorldItemSpawnAtRef.current) {
-      return;
-    }
-
-    if (worldItemsRef.current.length < WORLD_ITEM_MAX_ACTIVE) {
-      worldItemsRef.current.push(createWorldItem(now));
-    }
-
-    scheduleNextWorldItemSpawn(now);
-  }
-
   function syncBossUi() {
     const state = bossStateRef.current;
     setBossUi({
@@ -869,7 +451,6 @@ export default function AgarCell() {
       rewardDropped: bossStateRef.current.rewardDropped,
       boss: bossStateRef.current.boss,
       bonusPoints: bossStateRef.current.bonusPoints,
-      specialItems: bossStateRef.current.specialItems,
     };
 
     try {
@@ -959,10 +540,6 @@ export default function AgarCell() {
       bonusPoints: [
         ...bossStateRef.current.bonusPoints,
         ...createBossRewardDrops(bossStateRef.current.boss),
-      ],
-      specialItems: [
-        ...bossStateRef.current.specialItems,
-        ...createBossSpecialItems(bossStateRef.current.boss),
       ],
     };
 
@@ -1060,9 +637,7 @@ export default function AgarCell() {
     if (
       payload.phase === "defeated" &&
       Array.isArray(payload.bonusPoints) &&
-      payload.bonusPoints.length === 0 &&
-      Array.isArray(payload.specialItems) &&
-      payload.specialItems.length === 0
+      payload.bonusPoints.length === 0
     ) {
       restoreNormalModeFromBoss(payload.updatedAt || Date.now(), false);
     }
@@ -1133,7 +708,6 @@ export default function AgarCell() {
     lastBroadcastRef.current = now;
 
     const local = getLocalCentroidAndRadius();
-    const activeItem = getActiveItem(now);
 
     try {
       channel.send({
@@ -1150,14 +724,6 @@ export default function AgarCell() {
           blobs: serializeBlobs(blobsRef.current),
           score: scoreRef.current,
           skin: currentSkinRef.current,
-          activeItem: activeItem
-            ? {
-                itemType: activeItem.itemType,
-                itemName: activeItem.itemName,
-                iconSrc: activeItem.iconSrc,
-                expiresAt: activeItem.expiresAt,
-              }
-            : null,
           alive: true,
           updatedAt: now,
         },
@@ -1478,8 +1044,6 @@ export default function AgarCell() {
     }
     spikeImmunityUntilRef.current = 0;
     ejectedFoodRef.current = [];
-    worldItemsRef.current = [];
-    nextWorldItemSpawnAtRef.current = 0;
 
     // Pick a safe spawn that avoids spikes and other players.
     const { x: centerX, y: centerY } = findSafeSpawnPos();
@@ -1534,8 +1098,6 @@ export default function AgarCell() {
     setDeathReason("");
     resetCell({ includeObstacles: true });
     bossStateRef.current = createEmptyBossState();
-    worldItemsRef.current = [];
-    scheduleNextWorldItemSpawn(runStartedAtRef.current);
 
     setCellStartedValue(true);
     setShowGate(false);
@@ -1637,75 +1199,9 @@ export default function AgarCell() {
       target.y = clamp(camera.y + (viewY - canvas.clientHeight / 2) / zoom, 0, WORLD_HEIGHT);
     }
 
-    function handleCanvasClick(event) {
-      if (!isAliveRef.current || !cellStartedRef.current) {
-        return;
-      }
-
-      if (!isItemActive("teleport")) {
-        return;
-      }
-
-      const rect = canvas.getBoundingClientRect();
-      const viewX = event.clientX - rect.left;
-      const viewY = event.clientY - rect.top;
-      const camera = cameraRef.current;
-      const zoom = zoomRef.current;
-      const targetX = clamp(camera.x + (viewX - canvas.clientWidth / 2) / zoom, 0, WORLD_WIDTH);
-      const targetY = clamp(camera.y + (viewY - canvas.clientHeight / 2) / zoom, 0, WORLD_HEIGHT);
-
-      const current = blobsRef.current;
-      if (!current.length) {
-        return;
-      }
-
-      const localRadius = getCombinedRadius(current);
-
-      if (!isTeleportTargetAllowed(targetX, targetY, localRadius)) {
-        return;
-      }
-
-      const centroid = getBlobCentroid(current, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-      const dx = targetX - centroid.x;
-      const dy = targetY - centroid.y;
-
-      blobsRef.current = current.map((blob) => ({
-        ...blob,
-        x: clamp(blob.x + dx, blob.radius, WORLD_WIDTH - blob.radius),
-        y: clamp(blob.y + dy, blob.radius, WORLD_HEIGHT - blob.radius),
-      }));
-
-      sendPlayerState(true);
-    }
-
     function handleKeyDown(event) {
       if (!isAliveRef.current || !cellStartedRef.current) {
         return;
-      }
-
-      const activeItem = getActiveItem();
-
-      if (activeItem && (activeItem.itemType === "map" || activeItem.itemType === "teleport")) {
-        if (event.code === "ArrowUp") {
-          event.preventDefault();
-          freeViewOffsetRef.current.y -= MAP_PAN_STEP;
-          return;
-        }
-        if (event.code === "ArrowDown") {
-          event.preventDefault();
-          freeViewOffsetRef.current.y += MAP_PAN_STEP;
-          return;
-        }
-        if (event.code === "ArrowLeft") {
-          event.preventDefault();
-          freeViewOffsetRef.current.x -= MAP_PAN_STEP;
-          return;
-        }
-        if (event.code === "ArrowRight") {
-          event.preventDefault();
-          freeViewOffsetRef.current.x += MAP_PAN_STEP;
-          return;
-        }
       }
 
       if (event.code === "KeyE") {
@@ -1811,26 +1307,10 @@ export default function AgarCell() {
       ctx.fillRect(0, 0, width, height);
 
       let blobs = blobsRef.current;
-      let activeItem = getActiveItem(now);
-
-      if (activeItemRef.current && !activeItem) {
-        const consumedType = activeItemRef.current.itemType;
-        clearActiveItemEffect(consumedType);
-        sendPlayerState(true);
-      }
-
-      activeItem = getActiveItem(now);
-      const cloakActive = activeItem?.itemType === "cloak";
-      const mapScoutActive = activeItem?.itemType === "map";
-      const teleportActive = activeItem?.itemType === "teleport";
-      const shieldActive = activeItem?.itemType === "shield";
-      const magnetActive = activeItem?.itemType === "magnet";
 
       let bossMode = false;
 
       if (cellStartedRef.current && isAliveRef.current && !bossMode) {
-        maybeSpawnWorldItem(now);
-
         if (!spikeLogicStartedLoggedRef.current) {
           spikeLogicStartedLoggedRef.current = true;
           console.info("[AgarCell] Spike logic started");
@@ -1858,10 +1338,6 @@ export default function AgarCell() {
         updateBlobMovement(blobs, mouseTargetRef.current, bossMode ? 3 : 1);
         separateOverlappingBlobs(blobs);
         bossMode = isBossModePhase(bossStateRef.current.phase);
-
-        if (shieldActive) {
-          applyShieldPushback(blobs);
-        }
 
         if (bossMode) {
           clearStandardArenaForBoss();
@@ -1964,17 +1440,10 @@ export default function AgarCell() {
             }
           }
 
-          if (!cloakActive && blobs.length) {
+          if (blobs.length) {
             const localBlob = blobs[0];
 
             for (const remote of remotePlayersRef.current.values()) {
-              const remoteCloakActive =
-                remote.activeItem?.itemType === "cloak" && remote.activeItem.expiresAt > now;
-
-              if (remoteCloakActive) {
-                continue;
-              }
-
               const remoteBlob = remote.blobs?.[0] || {
                 x: remote.x,
                 y: remote.y,
@@ -2033,33 +1502,10 @@ export default function AgarCell() {
             });
           }
 
-          if (bossStateRef.current.specialItems.length) {
-            const pickedSpecialItems = [];
-
-            bossStateRef.current.specialItems = bossStateRef.current.specialItems.filter((item) => {
-              const collected = blobs.some(
-                (blob) => Math.hypot(blob.x - item.x, blob.y - item.y) <= blob.radius + item.radius
-              );
-
-              if (collected) {
-                pickedSpecialItems.push(item);
-                bossNeedsBroadcast = true;
-                return false;
-              }
-
-              return true;
-            });
-
-            if (pickedSpecialItems.length) {
-              registerCollectedBossItems(pickedSpecialItems);
-            }
-          }
-
           if (
             bossStateRef.current.phase === "defeated" &&
             bossStateRef.current.rewardDropped &&
-            bossStateRef.current.bonusPoints.length === 0 &&
-            bossStateRef.current.specialItems.length === 0
+            bossStateRef.current.bonusPoints.length === 0
           ) {
             restoreNormalModeFromBoss(now, true);
             bossMode = false;
@@ -2075,14 +1521,8 @@ export default function AgarCell() {
             sendBossState(true);
           }
         } else {
-          if (magnetActive) {
-            const currentZoom = Math.max(0.08, zoomRef.current || 1);
-            const visibleRange = Math.min(width, height) / (2 * currentZoom);
-            applyMagnetEffect(blobs, visibleRange);
-          }
-
           // Skip warning avoidance + collision while immune; immune player passes through freely
-          const isSpImmune = now < spikeImmunityUntilRef.current || shieldActive;
+          const isSpImmune = now < spikeImmunityUntilRef.current;
           if (!isSpImmune) {
             keepBlobsOutsideWarnings(blobs, warningZonesRef.current);
 
@@ -2113,27 +1553,6 @@ export default function AgarCell() {
           if (gainedScore > 0) {
             setScoreValue(scoreRef.current + gainedScore);
             updateHudFromBlobs(blobs);
-          }
-
-          if (worldItemsRef.current.length) {
-            const pickedSpecialItems = [];
-
-            worldItemsRef.current = worldItemsRef.current.filter((item) => {
-              const collected = blobs.some(
-                (blob) => Math.hypot(blob.x - item.x, blob.y - item.y) <= blob.radius + item.radius
-              );
-
-              if (!collected) {
-                return true;
-              }
-
-              pickedSpecialItems.push(item);
-              return false;
-            });
-
-            if (pickedSpecialItems.length) {
-              registerCollectedBossItems(pickedSpecialItems);
-            }
           }
 
           ejectedFoodRef.current = ejectedFoodRef.current
@@ -2185,7 +1604,7 @@ export default function AgarCell() {
             foodRef.current = foodRef.current.filter((_, i) => !botResult.consumedFoodIndices.has(i));
 
             const { updatedBots, nextLocalBlobs, botAteLocal, eatenLocalBlobs } = resolveBotVsLocal(botsRef.current, blobs);
-            if (botAteLocal && !cloakActive) {
+            if (botAteLocal) {
               botsRef.current = updatedBots;
               blobs = nextLocalBlobs;
               blobsRef.current = nextLocalBlobs;
@@ -2217,13 +1636,9 @@ export default function AgarCell() {
               isBot: true,
             }));
 
-          const pvpTargets = [...remotePlayersRef.current.values(), ...botRemotes].filter((target) => {
-            const tActive = target.activeItem;
-            return !(tActive?.itemType === "cloak" && tActive.expiresAt > now);
-          });
+          const pvpTargets = [...remotePlayersRef.current.values(), ...botRemotes];
 
-          if (!cloakActive) {
-            resolvePvpCombat(blobs, pvpTargets, {
+          resolvePvpCombat(blobs, pvpTargets, {
             onLocalEatRemoteBlob(remote, remoteBlobIndex, remoteBlob) {
               if (remote.isBot) {
                 botsRef.current = botsRef.current.map(bot =>
@@ -2249,8 +1664,7 @@ export default function AgarCell() {
 
               sendPlayerState(true);
             },
-            });
-          }
+          });
         }
       }
 
@@ -2258,22 +1672,15 @@ export default function AgarCell() {
       smoothRemotePlayers();
 
       const centroid = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-      const scoutCameraActive = !bossMode && (mapScoutActive || teleportActive);
-      const cameraFocusX = scoutCameraActive
-        ? centroid.x + freeViewOffsetRef.current.x
-        : centroid.x;
-      const cameraFocusY = scoutCameraActive
-        ? centroid.y + freeViewOffsetRef.current.y
-        : centroid.y;
+      const cameraFocusX = centroid.x;
+      const cameraFocusY = centroid.y;
 
       // Dynamic zoom: larger player sees more of the arena.
       const combinedRadius = blobs.length ? getCombinedRadius(blobs) : 22;
       const baseZoom = clamp(Math.pow(60 / Math.max(combinedRadius, 1), 0.5), 0.25, 1.0);
-      const targetZoom = scoutCameraActive
+      const targetZoom = bossMode
         ? clamp(baseZoom / 4, 0.08, 0.35)
-        : bossMode
-          ? clamp(baseZoom / 4, 0.08, 0.35)
-          : baseZoom;
+        : baseZoom;
       zoomRef.current += (targetZoom - zoomRef.current) * 0.05;
       const zoom = zoomRef.current;
 
@@ -2336,57 +1743,6 @@ export default function AgarCell() {
         ctx.restore();
       }
 
-      const visibleWorldItems = worldItemsRef.current.length
-        ? worldItemsRef.current
-        : bossStateRef.current.specialItems;
-
-      if (visibleWorldItems.length) {
-        ctx.save();
-        for (const item of visibleWorldItems) {
-          const itemImage = getCachedImage(specialItemImageCacheRef.current, item.iconSrc);
-
-          ctx.beginPath();
-          ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
-          ctx.fillStyle = item.color || "#22d3ee";
-          ctx.shadowColor = item.glow || "rgba(34, 211, 238, 0.5)";
-          ctx.shadowBlur = 24;
-          ctx.fill();
-
-          if (itemImage && itemImage.complete && itemImage.naturalWidth > 0) {
-            ctx.save();
-            ctx.beginPath();
-            ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
-            ctx.clip();
-            ctx.drawImage(
-              itemImage,
-              item.x - item.radius,
-              item.y - item.radius,
-              item.radius * 2,
-              item.radius * 2
-            );
-            ctx.restore();
-          } else {
-            const initial = (item.itemName || item.itemType || "?").slice(0, 1).toUpperCase();
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 14px system-ui";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText(initial, item.x, item.y + 0.5);
-          }
-
-          ctx.beginPath();
-          ctx.arc(item.x, item.y, item.radius - 3, 0, Math.PI * 2);
-          ctx.lineWidth = 2.5;
-          ctx.strokeStyle = "rgba(255,255,255,0.92)";
-          ctx.stroke();
-
-          ctx.lineWidth = 1.5;
-          ctx.strokeStyle = "rgba(2, 6, 23, 0.8)";
-          ctx.stroke();
-        }
-        ctx.restore();
-      }
-
       if (bossStateRef.current.boss) {
         const boss = bossStateRef.current.boss;
         const bossOpacity = bossPhase === "transition"
@@ -2441,10 +1797,6 @@ export default function AgarCell() {
       }
 
       for (const remote of remotePlayersRef.current.values()) {
-        const remoteCloakActive = remote.activeItem?.itemType === "cloak" && remote.activeItem.expiresAt > now;
-        if (remoteCloakActive) {
-          continue;
-        }
         drawRemotePlayer(ctx, remote);
       }
 
@@ -2454,66 +1806,6 @@ export default function AgarCell() {
 
       for (const blob of blobs) {
         drawLocalBlob(ctx, blob, username, playerColorRef.current, now, currentSkinRef.current);
-      }
-
-      if (shieldActive && blobs.length) {
-        const center = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-        const shieldRadius = getCombinedRadius(blobs) + ITEM_SHIELD_PADDING;
-        ctx.beginPath();
-        ctx.arc(center.x, center.y, shieldRadius, 0, Math.PI * 2);
-        ctx.lineWidth = 5;
-        ctx.strokeStyle = "rgba(34, 197, 94, 0.85)";
-        ctx.stroke();
-      }
-
-      if (activeItem && blobs.length) {
-        const center = getBlobCentroid(blobs, WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-        const itemIconRadius = 13;
-        const iconY = center.y - combinedRadius - 28;
-        const iconX = center.x;
-        const remainingSeconds = Math.max(0, Math.ceil((activeItem.expiresAt - now) / 1000));
-        const iconImage = getCachedImage(specialItemImageCacheRef.current, activeItem.iconSrc);
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(iconX, iconY, itemIconRadius, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(15, 23, 42, 0.86)";
-        ctx.fill();
-
-        if (iconImage && iconImage.complete && iconImage.naturalWidth > 0) {
-          ctx.save();
-          ctx.beginPath();
-          ctx.arc(iconX, iconY, itemIconRadius, 0, Math.PI * 2);
-          ctx.clip();
-          ctx.drawImage(
-            iconImage,
-            iconX - itemIconRadius,
-            iconY - itemIconRadius,
-            itemIconRadius * 2,
-            itemIconRadius * 2
-          );
-          ctx.restore();
-        } else {
-          const initial = (activeItem.itemName || activeItem.itemType || "?").slice(0, 1).toUpperCase();
-          ctx.fillStyle = "#ffffff";
-          ctx.font = "bold 12px system-ui";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(initial, iconX, iconY);
-        }
-
-        ctx.beginPath();
-        ctx.arc(iconX, iconY, itemIconRadius, 0, Math.PI * 2);
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "rgba(255,255,255,0.92)";
-        ctx.stroke();
-
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 12px system-ui";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(`${remainingSeconds}s`, iconX, iconY - 22);
-        ctx.restore();
       }
 
       ctx.restore();
@@ -2622,7 +1914,6 @@ export default function AgarCell() {
               radius: fallbackRadius,
               score: typeof payload.score === "number" ? payload.score : (previous?.score ?? 0),
               skin: payload.skin ?? previous?.skin ?? null,
-              activeItem: payload.activeItem ?? previous?.activeItem ?? null,
               parts: payload.parts || 1,
               updatedAt: payload.updatedAt || Date.now(),
               renderX: previous?.renderX ?? payload.x,
@@ -2802,7 +2093,6 @@ export default function AgarCell() {
 
     window.addEventListener("resize", resizeCanvas);
     canvas.addEventListener("mousemove", handleMouseMove);
-    canvas.addEventListener("click", handleCanvasClick);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("beforeunload", handleBeforeUnload);
     window.addEventListener("pagehide", handlePageHide);
@@ -2817,7 +2107,6 @@ export default function AgarCell() {
 
       window.removeEventListener("resize", resizeCanvas);
       canvas.removeEventListener("mousemove", handleMouseMove);
-      canvas.removeEventListener("click", handleCanvasClick);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("beforeunload", handleBeforeUnload);
       window.removeEventListener("pagehide", handlePageHide);
@@ -2844,9 +2133,6 @@ export default function AgarCell() {
           onlinePlayers={onlinePlayers}
           leaderboardPlayers={leaderboardPlayers}
           currentSkin={currentSkin}
-          collectedBossItems={collectedBossItems}
-          activeBossItem={activeBossItem}
-          onActivateBossItem={(itemType) => activateCollectedItem(itemType)}
           playerColor={playerColor}
           faceExpression={faceExpression}
           username={username}
