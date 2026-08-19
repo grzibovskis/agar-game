@@ -97,6 +97,9 @@ function radiusFromScore(score) {
 
 const SCORE_AREA_PER_POINT = 65;
 const BOSS_SPAWN_SEQUENCE_MS = [10 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000];
+const MAX_REALTIME_RETRIES = 3;
+const REALTIME_RECONNECT_DELAY_MS = 3_000;
+const REALTIME_DISABLED_BY_CONFIG = process.env.NEXT_PUBLIC_DISABLE_REALTIME === "true";
 
 function serializeBlobs(blobs) {
   return blobs.map((blob) => [round1(blob.x), round1(blob.y), round1(blob.radius)]);
@@ -137,6 +140,9 @@ export default function AgarCell() {
   const leaveSentRef = useRef(false);
   const startCountdownTimerRef = useRef(null);
   const lastLeaderboardUpdateRef = useRef(0);
+  const realtimeRetryCountRef = useRef(0);
+  const realtimeReconnectTimerRef = useRef(null);
+  const realtimeDisabledRef = useRef(REALTIME_DISABLED_BY_CONFIG);
 
   const mouseTargetRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
   const cameraRef = useRef({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 });
@@ -365,6 +371,21 @@ export default function AgarCell() {
     nextBossStageRef.current = 0;
     bossStateRef.current = createEmptyBossState();
     syncBossUi();
+  }
+
+  function enterRealtimeOfflineMode() {
+    realtimeDisabledRef.current = true;
+    realtimeRetryCountRef.current = MAX_REALTIME_RETRIES;
+    channelRef.current = null;
+    remotePlayersRef.current.clear();
+    setOnlinePlayers(1);
+    setLeaderboardPlayers((prev) => prev.filter((player) => player.isLocal));
+    setConnectionStatus("offline");
+
+    if (realtimeReconnectTimerRef.current) {
+      clearTimeout(realtimeReconnectTimerRef.current);
+      realtimeReconnectTimerRef.current = null;
+    }
   }
 
   function clearStandardArenaForBoss() {
@@ -1865,6 +1886,11 @@ export default function AgarCell() {
     }
 
     async function setupRealtime() {
+      if (realtimeDisabledRef.current) {
+        enterRealtimeOfflineMode();
+        return;
+      }
+
       try {
         const supabase = getSupabaseBrowserClient();
 
@@ -2048,6 +2074,7 @@ export default function AgarCell() {
           setConnectionStatus(status.toLowerCase());
 
           if (status === "SUBSCRIBED") {
+            realtimeRetryCountRef.current = 0;
             channel.track({
               sessionId: sessionIdRef.current,
               username: playerNameRef.current || "Guest",
@@ -2058,21 +2085,38 @@ export default function AgarCell() {
             status === "TIMED_OUT" ||
             status === "CLOSED"
           ) {
+            realtimeRetryCountRef.current += 1;
+
+            if (realtimeRetryCountRef.current >= MAX_REALTIME_RETRIES) {
+              console.warn("[AgarCell] Realtime unavailable; continuing in offline mode", { status });
+              try { channel.unsubscribe(); } catch (_) {}
+              enterRealtimeOfflineMode();
+              return;
+            }
+
+            if (realtimeReconnectTimerRef.current) {
+              return;
+            }
+
             // Auto-reconnect after a short back-off so broadcasts resume.
-            setTimeout(() => {
-              if (isDisposed) return;
+            realtimeReconnectTimerRef.current = setTimeout(() => {
+              realtimeReconnectTimerRef.current = null;
+
+              if (isDisposed || realtimeDisabledRef.current) return;
               console.info("[AgarCell] Channel dropped (", status, "), reconnecting…");
               try { channelRef.current?.unsubscribe(); } catch (_) {}
               channelRef.current = null;
               setupRealtime();
-            }, 3_000);
+            }, REALTIME_RECONNECT_DELAY_MS);
           }
         });
 
         channelRef.current = channel;
-      } catch {
+      } catch (error) {
+        console.warn("[AgarCell] realtime setup failed; continuing in offline mode", error);
+
         if (!isDisposed) {
-          setConnectionStatus("error");
+          enterRealtimeOfflineMode();
         }
       }
     }
@@ -2102,6 +2146,11 @@ export default function AgarCell() {
       if (startCountdownTimerRef.current) {
         clearInterval(startCountdownTimerRef.current);
         startCountdownTimerRef.current = null;
+      }
+
+      if (realtimeReconnectTimerRef.current) {
+        clearTimeout(realtimeReconnectTimerRef.current);
+        realtimeReconnectTimerRef.current = null;
       }
 
       window.removeEventListener("resize", resizeCanvas);
