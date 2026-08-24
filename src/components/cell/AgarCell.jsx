@@ -96,6 +96,7 @@ function radiusFromScore(score) {
 }
 
 const SCORE_AREA_PER_POINT = 65;
+const ARENA_FOOD_TARGET = Math.round(FOOD_TARGET * 1.5);
 const BOSS_SPAWN_SEQUENCE_MS = [10 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000];
 const MAX_REALTIME_RETRIES = 3;
 const REALTIME_RECONNECT_DELAY_MS = 3_000;
@@ -426,7 +427,7 @@ export default function AgarCell() {
     mergeStateRef.current.nextMergeAt = null;
     blobsRef.current = [createBlob(x, y, radius)];
     foodRef.current = createFood(
-      FOOD_TARGET,
+      ARENA_FOOD_TARGET,
       WORLD_WIDTH,
       WORLD_HEIGHT,
       getRestrictedZones(spikesRef.current, warningZonesRef.current)
@@ -1073,7 +1074,7 @@ export default function AgarCell() {
       : [createBlob(centerX, centerY, 22)];
     foodRef.current = includeObstacles && !bossMode
       ? createFood(
-          FOOD_TARGET,
+          ARENA_FOOD_TARGET,
           WORLD_WIDTH,
           WORLD_HEIGHT,
           getRestrictedZones(spikesRef.current, warningZonesRef.current)
@@ -1567,7 +1568,8 @@ export default function AgarCell() {
             remainingFood,
             WORLD_WIDTH,
             WORLD_HEIGHT,
-            getRestrictedZones(spikesRef.current, warningZonesRef.current)
+            getRestrictedZones(spikesRef.current, warningZonesRef.current),
+            ARENA_FOOD_TARGET
           );
 
           if (gainedScore > 0) {
