@@ -41,12 +41,12 @@ export function createFood(count, worldWidth, worldHeight, restrictedZones = [])
   return nextFood;
 }
 
-export function replenishFood(food, worldWidth, worldHeight, restrictedZones = []) {
+export function replenishFood(food, worldWidth, worldHeight, restrictedZones = [], targetCount = FOOD_TARGET) {
   const nextFood = food.filter(
     (point) => !isInsideRestrictedZone(point.x, point.y, point.radius, restrictedZones)
   );
 
-  while (nextFood.length < FOOD_TARGET) {
+  while (nextFood.length < targetCount) {
     const created = createFood(1, worldWidth, worldHeight, restrictedZones);
 
     if (!created.length) {
