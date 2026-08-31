@@ -1,6 +1,6 @@
 export const WORLD_WIDTH = 10500;
 export const WORLD_HEIGHT = 10500;
-export const FOOD_TARGET = 780;
+export const FOOD_TARGET = 260 * 12;
 export const GRID_SIZE = 90;
 export const MERGE_INTERVAL_MS = 60_000;
 export const MAX_BLOBS = 32;
