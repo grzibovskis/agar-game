@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import SkinPicker from "@/components/layout/SkinPicker";
-import ItemInventory from "@/components/layout/ItemInventory";
 
 // Animated circle with face — minimal breathing, drawn on canvas
 function PlayerCircle({ color, faceExpression = "serious" }) {
@@ -115,9 +114,6 @@ const STATS = [
 export default function PlayerCard({
   playerColor   = "#22c55e",
   currentSkin   = null,
-  collectedBossItems = [],
-  activeBossItem = null,
-  onActivateBossItem,
   onSelectSkin,
   score         = 0,
   size          = 22,
@@ -191,17 +187,6 @@ export default function PlayerCard({
                     setSkinsOpen(false);
                   }}
                 />
-
-                <div className="border-t border-slate-800 px-3 py-2.5">
-                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    Collected Boss Items
-                  </p>
-                  <ItemInventory
-                    items={collectedBossItems}
-                    activeItem={activeBossItem}
-                    onActivateItem={(itemType) => onActivateBossItem?.(itemType)}
-                  />
-                </div>
               </div>
             )}
           </div>

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { sanitizeUsername } from "@/lib/sanitize";
 
 export default function UsernameGate({
   open,
@@ -12,16 +13,8 @@ export default function UsernameGate({
   const [name, setName] = useState(defaultName);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const trimmedName = name.trim();
+  const trimmedName = sanitizeUsername(name);
   const isDisabled = !trimmedName || isSubmitting;
-
-  useEffect(() => {
-    console.info("[UsernameGate] state", {
-      username: name,
-      isSubmitting,
-      disabled: isDisabled,
-    });
-  }, [name, isSubmitting, isDisabled]);
 
   if (!open) {
     return null;
@@ -30,13 +23,7 @@ export default function UsernameGate({
   async function handleSubmit(event) {
     event.preventDefault();
 
-    const trimmed = name.trim().slice(0, 18);
-
-    console.info("[UsernameGate] Start button clicked", {
-      username: trimmed,
-      isSubmitting,
-      disabled: isDisabled,
-    });
+    const trimmed = sanitizeUsername(name);
 
     if (!trimmed || isSubmitting || typeof onSubmit !== "function") {
       return;
@@ -45,7 +32,6 @@ export default function UsernameGate({
     setIsSubmitting(true);
 
     try {
-      console.info("[UsernameGate] Starting session", { username: trimmed });
       await Promise.resolve(onSubmit(trimmed));
     } catch (error) {
       console.warn("[UsernameGate] realtime/Supabase start warning", error);
@@ -69,7 +55,7 @@ export default function UsernameGate({
             id="username"
             value={name}
             maxLength={18}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => setName(sanitizeUsername(event.target.value))}
             placeholder="Type your name"
             className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-white outline-none ring-0 placeholder:text-slate-400 focus:border-emerald-400"
             autoFocus
